@@ -211,15 +211,26 @@ def extraer_con_api_nube(
     Envía el texto OCR a una API en la nube compatible con OpenAI (como Groq o OpenRouter)
     para permitir el uso desde cualquier celular en internet sin depender de hardware local.
     """
-    if not api_key.strip():
+    clave_limpia = api_key.strip().strip('"').strip("'")
+    if not clave_limpia:
         return normalizar_diccionario_extraido({}), "Falta ingresar la clave de API (API Key) para el modo Nube."
 
+    # Sanitización automática de la URL del endpoint
+    url_limpia = endpoint_url.strip().rstrip("/")
+    if not url_limpia.endswith("/chat/completions"):
+        if url_limpia.endswith("/v1"):
+            url_limpia += "/chat/completions"
+        elif "/v1" not in url_limpia:
+            url_limpia += "/openai/v1/chat/completions"
+        else:
+            url_limpia += "/chat/completions"
+
     headers = {
-        "Authorization": f"Bearer {api_key.strip()}",
+        "Authorization": f"Bearer {clave_limpia}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": modelo,
+        "model": modelo.strip(),
         "messages": [
             {"role": "system", "content": PROMPT_SISTEMA},
             {"role": "user", "content": f"TEXTO OCR DEL COMPROBANTE:\n{texto_ocr}"},
@@ -228,13 +239,23 @@ def extraer_con_api_nube(
         "response_format": {"type": "json_object"},
     }
     try:
-        resp = requests.post(endpoint_url, headers=headers, json=payload, timeout=45)
-        resp.raise_for_status()
+        resp = requests.post(url_limpia, headers=headers, json=payload, timeout=45)
+        if not resp.ok:
+            detalle = ""
+            try:
+                error_json = resp.json()
+                detalle = error_json.get("error", {}).get("message", "")
+            except Exception:
+                detalle = resp.text
+            return (
+                normalizar_diccionario_extraido({}),
+                f"Error en API Nube ({resp.status_code}): {detalle or resp.reason}. URL usada: {url_limpia}",
+            )
         contenido = resp.json()["choices"][0]["message"]["content"]
         datos = extraer_json_de_respuesta(contenido)
         return normalizar_diccionario_extraido(datos), None
     except Exception as exc:
-        return normalizar_diccionario_extraido({}), f"Error en API Nube ({modelo}): {exc}"
+        return normalizar_diccionario_extraido({}), f"Error de conexión con API Nube ({modelo}): {exc}"
 
 
 def extraer_con_reglas_regex(texto_ocr: str) -> Dict[str, str]:
@@ -907,10 +928,12 @@ def main() -> None:
                     "qwen-qwq-32b",
                 ],
             )
-            endpoint_nube = st.text_input(
-                "Endpoint API:",
-                value="https://api.groq.com/openai/v1/chat/completions",
-            )
+            with st.expander("⚙️ Opciones avanzadas de API (opcional)", expanded=False):
+                endpoint_nube = st.text_input(
+                    "Endpoint API:",
+                    value="https://api.groq.com/openai/v1/chat/completions",
+                    help="Por defecto apunta a la API oficial de Groq.",
+                )
 
     # --------------------------------------------------------------------------
     # PESTAÑAS PRINCIPALES DE LA APLICACIÓN
