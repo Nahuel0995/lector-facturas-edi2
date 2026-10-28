@@ -201,6 +201,137 @@ def extraer_con_ollama_local(
         return normalizar_diccionario_extraido({}), f"Error en Ollama local ({modelo}): {exc}"
 
 
+def detectar_proveedor_api(api_key: str) -> str:
+    """Detecta automáticamente el proveedor según el formato de la API Key."""
+    clave = api_key.strip().strip('"').strip("'")
+    if clave.startswith("AIza"):
+        return "google"
+    if clave.startswith("sk-or-"):
+        return "openrouter"
+    return "groq"
+
+
+def obtener_modelos_nube(api_key: str) -> Tuple[List[str], str, Optional[str]]:
+    """
+    Consulta en vivo a la API en la nube (Groq, Google Gemini u OpenRouter)
+    para listar únicamente los modelos activos y habilitados en la cuenta del usuario.
+    """
+    clave = api_key.strip().strip('"').strip("'")
+    if not clave:
+        return [], "groq", None
+
+    proveedor = detectar_proveedor_api(clave)
+
+    if proveedor == "google":
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={clave}"
+            resp = requests.get(url, timeout=10)
+            if not resp.ok:
+                detalle = resp.json().get("error", {}).get("message", resp.reason)
+                return [], "google", f"Clave de Google inválida o sin acceso ({resp.status_code}): {detalle}"
+            datos = resp.json().get("models", [])
+            modelos = []
+            for m in datos:
+                metodos = m.get("supportedGenerationMethods", [])
+                nombre = m.get("name", "").replace("models/", "")
+                if "generateContent" in metodos and "gemini" in nombre.lower():
+                    if not any(excl in nombre.lower() for excl in ["vision", "embedding", "imagen", "veo", "tts", "audio"]):
+                        modelos.append(nombre)
+            # Priorizar modelos flash rápidos y estables
+            modelos.sort(key=lambda x: (0 if "2.5-flash" in x else 1 if "2.0-flash" in x else 2 if "flash" in x else 3, x))
+            return modelos, "google", None
+        except Exception as exc:
+            return [], "google", f"Error al consultar modelos de Google Gemini: {exc}"
+
+    # Groq u OpenRouter (compatibles con OpenAI)
+    url_modelos = (
+        "https://openrouter.ai/api/v1/models"
+        if proveedor == "openrouter"
+        else "https://api.groq.com/openai/v1/models"
+    )
+    try:
+        headers = {"Authorization": f"Bearer {clave}"}
+        resp = requests.get(url_modelos, headers=headers, timeout=10)
+        if not resp.ok:
+            try:
+                detalle = resp.json().get("error", {}).get("message", resp.reason)
+            except Exception:
+                detalle = resp.reason
+            return [], proveedor, f"Error en API ({resp.status_code}): {detalle}"
+
+        datos = resp.json().get("data", [])
+        palabras_excluidas = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "allam", "distil-whisper", "orpheus")
+        modelos = [
+            m.get("id", "")
+            for m in datos
+            if m.get("id") and not any(p in m.get("id", "").lower() for p in palabras_excluidas)
+        ]
+
+        def prioridad_modelo(nombre_mod: str) -> Tuple[int, str]:
+            n = nombre_mod.lower()
+            if "llama-3.3" in n or "llama-4" in n:
+                return (0, n)
+            if "llama-3.1" in n or "llama3" in n:
+                return (1, n)
+            if "qwen" in n or "gemma" in n or "deepseek" in n:
+                return (2, n)
+            return (3, n)
+
+        modelos.sort(key=prioridad_modelo)
+        return modelos, proveedor, None
+    except Exception as exc:
+        return [], proveedor, f"No se pudieron listar los modelos de la nube: {exc}"
+
+
+def extraer_con_google_gemini(
+    texto_ocr: str,
+    api_key: str,
+    modelo: str = "gemini-2.5-flash",
+) -> Tuple[Dict[str, str], Optional[str]]:
+    """Extrae los 9 campos usando la API gratuita de Google AI Studio (Gemini)."""
+    clave = api_key.strip().strip('"').strip("'")
+    nombre_modelo = modelo.strip().replace("models/", "") or "gemini-2.5-flash"
+
+    def invocar_gemini(mod: str) -> requests.Response:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={clave}"
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": f"{PROMPT_SISTEMA}\n\nTEXTO OCR DEL COMPROBANTE:\n{texto_ocr}"}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.0,
+                "responseMimeType": "application/json",
+            },
+        }
+        return requests.post(url, json=payload, timeout=45)
+
+    try:
+        resp = invocar_gemini(nombre_modelo)
+        if resp.status_code == 404:
+            modelos_disp, _, _ = obtener_modelos_nube(clave)
+            if modelos_disp:
+                nombre_modelo = modelos_disp[0]
+                resp = invocar_gemini(nombre_modelo)
+
+        if not resp.ok:
+            try:
+                detalle = resp.json().get("error", {}).get("message", resp.reason)
+            except Exception:
+                detalle = resp.text
+            return normalizar_diccionario_extraido({}), f"Error en Google Gemini ({resp.status_code}): {detalle}"
+
+        candidatos = resp.json().get("candidates", [])
+        texto_resp = candidatos[0]["content"]["parts"][0]["text"] if candidatos else "{}"
+        datos = extraer_json_de_respuesta(texto_resp)
+        return normalizar_diccionario_extraido(datos), None
+    except Exception as exc:
+        return normalizar_diccionario_extraido({}), f"Error de conexión con Google Gemini: {exc}"
+
+
 def extraer_con_api_nube(
     texto_ocr: str,
     api_key: str,
@@ -208,38 +339,64 @@ def extraer_con_api_nube(
     endpoint_url: str = "https://api.groq.com/openai/v1/chat/completions",
 ) -> Tuple[Dict[str, str], Optional[str]]:
     """
-    Envía el texto OCR a una API en la nube compatible con OpenAI (como Groq o OpenRouter)
+    Envía el texto OCR a una API en la nube (Groq, Google Gemini u OpenRouter)
     para permitir el uso desde cualquier celular en internet sin depender de hardware local.
     """
     clave_limpia = api_key.strip().strip('"').strip("'")
     if not clave_limpia:
         return normalizar_diccionario_extraido({}), "Falta ingresar la clave de API (API Key) para el modo Nube."
 
-    # Sanitización automática de la URL del endpoint
-    url_limpia = endpoint_url.strip().rstrip("/")
-    if not url_limpia.endswith("/chat/completions"):
-        if url_limpia.endswith("/v1"):
-            url_limpia += "/chat/completions"
-        elif "/v1" not in url_limpia:
-            url_limpia += "/openai/v1/chat/completions"
-        else:
-            url_limpia += "/chat/completions"
+    proveedor = detectar_proveedor_api(clave_limpia)
+    if proveedor == "google":
+        return extraer_con_google_gemini(texto_ocr, clave_limpia, modelo=modelo)
+
+    if proveedor == "openrouter" and "groq.com" in endpoint_url:
+        url_limpia = "https://openrouter.ai/api/v1/chat/completions"
+    else:
+        url_limpia = endpoint_url.strip().rstrip("/")
+        if not url_limpia.endswith("/chat/completions"):
+            if url_limpia.endswith("/v1"):
+                url_limpia += "/chat/completions"
+            elif "/v1" not in url_limpia:
+                url_limpia += "/openai/v1/chat/completions"
+            else:
+                url_limpia += "/chat/completions"
 
     headers = {
         "Authorization": f"Bearer {clave_limpia}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": modelo.strip(),
-        "messages": [
-            {"role": "system", "content": PROMPT_SISTEMA},
-            {"role": "user", "content": f"TEXTO OCR DEL COMPROBANTE:\n{texto_ocr}"},
-        ],
-        "temperature": 0.0,
-        "response_format": {"type": "json_object"},
-    }
+
+    def enviar_peticion(mod_actual: str, forzar_json: bool = True) -> requests.Response:
+        cuerpo = {
+            "model": mod_actual.strip(),
+            "messages": [
+                {"role": "system", "content": PROMPT_SISTEMA},
+                {"role": "user", "content": f"TEXTO OCR DEL COMPROBANTE:\n{texto_ocr}"},
+            ],
+            "temperature": 0.0,
+        }
+        if forzar_json:
+            cuerpo["response_format"] = {"type": "json_object"}
+        return requests.post(url_limpia, headers=headers, json=cuerpo, timeout=45)
+
     try:
-        resp = requests.post(url_limpia, headers=headers, json=payload, timeout=45)
+        resp = enviar_peticion(modelo, forzar_json=True)
+
+        # Si el modelo elegido fue retirado o no está habilitado (404), usar automáticamente el primer modelo activo de la cuenta
+        if resp.status_code == 404:
+            modelos_activos, _, _ = obtener_modelos_nube(clave_limpia)
+            for mod_alternativo in modelos_activos[:3]:
+                resp = enviar_peticion(mod_alternativo, forzar_json=True)
+                if resp.status_code == 400:
+                    resp = enviar_peticion(mod_alternativo, forzar_json=False)
+                if resp.ok:
+                    break
+
+        # Si el modelo no soporta response_format json_object (400), reintentar sin response_format
+        if resp.status_code == 400:
+            resp = enviar_peticion(modelo, forzar_json=False)
+
         if not resp.ok:
             detalle = ""
             try:
@@ -249,7 +406,7 @@ def extraer_con_api_nube(
                 detalle = resp.text
             return (
                 normalizar_diccionario_extraido({}),
-                f"Error en API Nube ({resp.status_code}): {detalle or resp.reason}. URL usada: {url_limpia}",
+                f"Error en API Nube ({resp.status_code}): {detalle or resp.reason}",
             )
         contenido = resp.json()["choices"][0]["message"]["content"]
         datos = extraer_json_de_respuesta(contenido)
@@ -867,10 +1024,18 @@ def main() -> None:
         )
 
         st.subheader("Modo de Inteligencia Artificial")
-        clave_entorno = os.environ.get("GROQ_API_KEY", "")
+        clave_entorno = (
+            os.environ.get("GROQ_API_KEY", "")
+            or os.environ.get("GEMINI_API_KEY", "")
+            or os.environ.get("GOOGLE_API_KEY", "")
+        )
         if not clave_entorno:
             try:
-                clave_entorno = st.secrets.get("GROQ_API_KEY", "")
+                clave_entorno = (
+                    st.secrets.get("GROQ_API_KEY", "")
+                    or st.secrets.get("GEMINI_API_KEY", "")
+                    or st.secrets.get("GOOGLE_API_KEY", "")
+                )
             except Exception:
                 clave_entorno = ""
 
@@ -911,28 +1076,47 @@ def main() -> None:
 
         elif modo_ia.startswith("2."):
             st.info(
-                "En modo Nube, cualquier usuario puede entrar desde su celular sin descargar "
-                "el modelo. Usa una API gratuita compatible con modelos abiertos (ej. Groq)."
+                "Acepta claves gratuitas de **Groq** (`gsk_...`), **Google AI Studio / Gemini** (`AIza...`) "
+                "u **OpenRouter** (`sk-or-...`). Detecta automáticamente el proveedor y tus modelos activos."
             )
             api_key_nube = st.text_input(
-                "API Key (Groq / OpenRouter):",
+                "API Key (Groq o Google Gemini):",
                 value=clave_entorno,
                 type="password",
-                placeholder="gsk_...",
+                placeholder="Pega tu clave gsk_... o AIza...",
             )
-            modelo_seleccionado = st.selectbox(
-                "Modelo abierto en la nube:",
-                options=[
-                    "llama-3.3-70b-versatile",
-                    "llama-3.1-8b-instant",
-                    "qwen-qwq-32b",
-                ],
-            )
+
+            modelos_nube, proveedor_detectado, error_modelos_nube = obtener_modelos_nube(api_key_nube)
+            nombre_prov = {
+                "google": "Google Gemini",
+                "groq": "Groq Cloud",
+                "openrouter": "OpenRouter",
+            }.get(proveedor_detectado, "Nube")
+
+            if modelos_nube:
+                st.success(f"✅ Conectado a {nombre_prov} ({len(modelos_nube)} modelos disponibles)")
+                modelo_seleccionado = st.selectbox(
+                    f"Modelo activo en {nombre_prov}:",
+                    options=modelos_nube,
+                )
+            else:
+                if api_key_nube.strip() and error_modelos_nube:
+                    st.warning(error_modelos_nube)
+                opciones_por_defecto = (
+                    ["gemini-2.5-flash", "gemini-2.0-flash"]
+                    if proveedor_detectado == "google"
+                    else ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+                )
+                modelo_seleccionado = st.selectbox(
+                    "Modelo en la nube:",
+                    options=opciones_por_defecto,
+                )
+
             with st.expander("⚙️ Opciones avanzadas de API (opcional)", expanded=False):
                 endpoint_nube = st.text_input(
-                    "Endpoint API:",
+                    "Endpoint API (solo para Groq/OpenRouter):",
                     value="https://api.groq.com/openai/v1/chat/completions",
-                    help="Por defecto apunta a la API oficial de Groq.",
+                    help="Si usas Google Gemini (AIza...), el endpoint oficial de Google se selecciona automáticamente.",
                 )
 
     # --------------------------------------------------------------------------
