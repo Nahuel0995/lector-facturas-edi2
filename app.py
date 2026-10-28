@@ -4,24 +4,45 @@ Proyecto: Lector inteligente de comprobantes y facturas
 Integrantes: Alan Bustamante, Christian Martínez
 
 Descripción:
-Aplicación web en Streamlit con arquitectura híbrida (Ollama Local + API en la Nube)
-para la lectura mediante OCR (Tesseract), extracción estructurada de los 9 campos
-definidos en la propuesta, revisión manual, exportación (CSV/JSON) y evaluación
-de exactitud frente a una transcripción de referencia (Ground Truth).
+Aplicación web en Streamlit con diseño editorial cálido y minimalista,
+optimizador de imagen con OpenCV (Filtro Escáner) para Tesseract OCR,
+extracción estructurada con IA híbrida (Groq / Google Gemini / Ollama / Regex),
+autenticación de usuarios y persistencia en la nube con Supabase (Storage + PostgreSQL)
+con soporte de Modo Demo Local automático.
 """
 
+import io
 import json
 import os
 import re
 import shutil
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import pytesseract
 import requests
 import streamlit as st
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+try:
+    import cv2
+
+    OPENCV_DISPONIBLE = True
+except ImportError:
+    cv2 = None  # type: ignore
+    OPENCV_DISPONIBLE = False
+
+try:
+    from supabase import Client, create_client
+
+    SUPABASE_LIB_DISPONIBLE = True
+except ImportError:
+    Client = Any  # type: ignore
+    create_client = None  # type: ignore
+    SUPABASE_LIB_DISPONIBLE = False
+
 
 # ==============================================================================
 # 1. CONFIGURACIÓN GENERAL Y ESQUEMA DE CAMPOS DEL PROYECTO
@@ -64,7 +85,7 @@ REGLAS ESTRICTAS:
 
 
 # ==============================================================================
-# 2. MÓDULO DE RECONOCIMIENTO ÓPTICO DE CARACTERES (TESSERACT OCR)
+# 2. MÓDULO DE RECONOCIMIENTO ÓPTICO (OPENCV + TESSERACT OCR)
 # ==============================================================================
 
 def configurar_ruta_tesseract() -> Optional[str]:
@@ -86,38 +107,76 @@ def configurar_ruta_tesseract() -> Optional[str]:
     return None
 
 
-def preprocesar_imagen(imagen: Image.Image, aplicar_mejora: bool = True) -> Image.Image:
+def optimizar_para_tesseract(pil_image: Image.Image) -> Image.Image:
     """
-    Aplica mejoras de imagen (escala de grises, autocontraste y nitidez)
-    para reducir errores de lectura en tickets térmicos o fotos de celular.
+    Optimizador de imagen especializado para Tesseract OCR (Filtro Escáner con OpenCV):
+    1. Convierte la imagen a escala de grises.
+    2. Aplica reescalado (upscaling 1.5x o 2x con cv2.INTER_CUBIC) si la imagen es pequeña
+       para mejorar la lectura de tipografía pequeña en tickets térmicos.
+    3. Aplica reducción de ruido preservando bordes (cv2.bilateralFilter).
+    4. Aplica binarización adaptativa (cv2.adaptiveThreshold con blockSize=31, C=15)
+       para eliminar sombras de fotos tomadas con celular sin romper caracteres numéricos.
     """
-    img_rgb = imagen.convert("RGB")
-    if not aplicar_mejora:
-        return img_rgb
+    img_rgb = pil_image.convert("RGB")
 
-    # Conversión a escala de grises
-    gris = ImageOps.grayscale(img_rgb)
-    # Estiramiento de contraste automático
-    gris = ImageOps.autocontrast(gris, cutoff=1)
-    # Aumento de nitidez y contraste para resaltar caracteres borrosos
-    realce_contraste = ImageEnhance.Contrast(gris).enhance(1.6)
-    realce_nitidez = realce_contraste.filter(ImageFilter.SHARPEN)
-    return realce_nitidez
+    if not OPENCV_DISPONIBLE or cv2 is None:
+        # Respaldo con Pillow si OpenCV no está instalado aún en el entorno local
+        gris_pil = ImageOps.grayscale(img_rgb)
+        gris_pil = ImageOps.autocontrast(gris_pil, cutoff=1)
+        realce = ImageEnhance.Contrast(gris_pil).enhance(1.8)
+        return realce.filter(ImageFilter.SHARPEN)
+
+    img_np = np.array(img_rgb)
+    gris = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+
+    # 2. Reescalado (upscaling) para imágenes pequeñas o tickets de baja resolución
+    alto, ancho = gris.shape[:2]
+    dimension_max = max(alto, ancho)
+    if dimension_max < 1000:
+        factor = 2.0
+    elif dimension_max < 1600:
+        factor = 1.5
+    else:
+        factor = 1.0
+
+    if factor > 1.0:
+        gris = cv2.resize(
+            gris,
+            None,
+            fx=factor,
+            fy=factor,
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+    # 3. Reducción de ruido preservando la nitidez de los bordes de letras y números
+    filtrado = cv2.bilateralFilter(gris, d=9, sigmaColor=75, sigmaSpace=75)
+
+    # 4. Binarización adaptativa para eliminar sombras e iluminación despareja
+    binarizada = cv2.adaptiveThreshold(
+        filtrado,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=31,
+        C=15,
+    )
+
+    return Image.fromarray(binarizada)
 
 
 def ejecutar_ocr(imagen: Image.Image, idioma: str = "spa") -> Tuple[str, Optional[str]]:
     """
-    Ejecuta Tesseract OCR sobre la imagen suministrada.
-    Si el paquete 'spa' no está instalado, reintenta automáticamente con 'eng'.
+    Ejecuta Tesseract OCR sobre la imagen con la configuración óptima para facturas
+    (config='--oem 3 --psm 6'). Si 'spa' no está disponible, reintenta con 'eng'.
     """
+    config_optima = "--oem 3 --psm 6"
     try:
-        config_psm = "--oem 3 --psm 6"
-        texto = pytesseract.image_to_string(imagen, lang=idioma, config=config_psm)
+        texto = pytesseract.image_to_string(imagen, lang=idioma, config=config_optima)
         return texto.strip(), None
     except pytesseract.TesseractError as err:
         if idioma != "eng":
             try:
-                texto = pytesseract.image_to_string(imagen, lang="eng", config="--oem 3 --psm 6")
+                texto = pytesseract.image_to_string(imagen, lang="eng", config=config_optima)
                 aviso = (
                     "Se procesó con el paquete en inglés ('eng') porque no se detectó "
                     "el paquete 'spa' de Tesseract."
@@ -131,14 +190,124 @@ def ejecutar_ocr(imagen: Image.Image, idioma: str = "spa") -> Tuple[str, Optiona
 
 
 # ==============================================================================
-# 3. MÓDULO DE EXTRACCIÓN HÍBRIDA (OLLAMA LOCAL + NUBE + RESPALDO REGEX)
+# 3. MÓDULO DE AUTENTICACIÓN Y PERSISTENCIA EN SUPABASE (STORAGE + DB)
+# ==============================================================================
+
+def obtener_credenciales_supabase() -> Tuple[str, str]:
+    """Obtiene SUPABASE_URL y SUPABASE_KEY desde st.secrets o variables de entorno."""
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = os.environ.get("SUPABASE_KEY", "").strip()
+    if not url or not key:
+        try:
+            url = url or str(st.secrets.get("SUPABASE_URL", "")).strip()
+            key = key or str(st.secrets.get("SUPABASE_KEY", "")).strip()
+        except Exception:
+            pass
+    return url, key
+
+
+@st.cache_resource(show_spinner=False)
+def inicializar_cliente_supabase(url: str, key: str) -> Optional[Client]:
+    """Inicializa y cachea el cliente de Supabase si las credenciales son válidas."""
+    if not SUPABASE_LIB_DISPONIBLE or not url or not key or create_client is None:
+        return None
+    try:
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def sanitizar_nombre_archivo(nombre: str) -> str:
+    """Limpia caracteres especiales del nombre de archivo antes de subirlo a Supabase Storage."""
+    base = re.sub(r"[^a-zA-Z0-9._-]", "_", nombre)
+    return base or "comprobante.png"
+
+
+def guardar_comprobante_en_supabase(
+    cliente: Client,
+    user_id: str,
+    user_email: str,
+    bytes_imagen: bytes,
+    nombre_archivo: str,
+    mime_type: str,
+    datos_revisados: Dict[str, str],
+    texto_ocr: str,
+) -> Tuple[bool, str, Optional[str]]:
+    """
+    Sube la foto al bucket 'comprobantes' en la ruta {user_id}/{timestamp}_{nombre_archivo}
+    y guarda los 9 campos estructurados junto con la URL de la imagen en la tabla 'facturas'.
+    """
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nombre_limpio = sanitizar_nombre_archivo(nombre_archivo)
+    ruta_storage = f"{user_id}/{timestamp_str}_{nombre_limpio}"
+    imagen_url = ""
+
+    # 1. Subir imagen al bucket 'comprobantes'
+    try:
+        cliente.storage.from_("comprobantes").upload(
+            path=ruta_storage,
+            file=bytes_imagen,
+            file_options={"content-type": mime_type or "image/png", "upsert": "true"},
+        )
+        res_url = cliente.storage.from_("comprobantes").get_public_url(ruta_storage)
+        imagen_url = res_url if isinstance(res_url, str) else str(res_url)
+    except Exception as exc_storage:
+        # Si el bucket requiere permisos adicionales, registramos el aviso sin bloquear el guardado en tabla
+        imagen_url = f"storage://comprobantes/{ruta_storage}"
+        aviso_storage = f"(Aviso Storage: {exc_storage})"
+    else:
+        aviso_storage = ""
+
+    # 2. Insertar registro en la tabla 'facturas'
+    registro_db = {
+        "user_id": user_id,
+        "user_email": user_email,
+        "tipo_documento": datos_revisados.get("tipo_documento", VALOR_NO_IDENTIFICADO),
+        "emisor": datos_revisados.get("emisor", VALOR_NO_IDENTIFICADO),
+        "cuit": datos_revisados.get("cuit", VALOR_NO_IDENTIFICADO),
+        "fecha_emision": datos_revisados.get("fecha_emision", VALOR_NO_IDENTIFICADO),
+        "numero_comprobante": datos_revisados.get("numero_comprobante", VALOR_NO_IDENTIFICADO),
+        "importe_neto": datos_revisados.get("importe_neto", VALOR_NO_IDENTIFICADO),
+        "impuestos_iva": datos_revisados.get("impuestos_iva", VALOR_NO_IDENTIFICADO),
+        "importe_total": datos_revisados.get("importe_total", VALOR_NO_IDENTIFICADO),
+        "moneda": datos_revisados.get("moneda", VALOR_NO_IDENTIFICADO),
+        "texto_ocr": texto_ocr,
+        "imagen_url": imagen_url,
+        "storage_path": ruta_storage,
+    }
+
+    try:
+        cliente.table("facturas").insert(registro_db).execute()
+        mensaje = "¡Comprobante e imagen guardados exitosamente en Supabase!"
+        if aviso_storage:
+            mensaje += f" {aviso_storage}"
+        return True, mensaje, imagen_url
+    except Exception as exc_db:
+        return False, f"Error al guardar en la tabla 'facturas' de Supabase: {exc_db}", None
+
+
+def consultar_facturas_usuario_supabase(cliente: Client, user_id: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Obtiene los comprobantes guardados por el usuario autenticado desde la tabla 'facturas'."""
+    try:
+        respuesta = (
+            cliente.table("facturas")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        datos = respuesta.data if hasattr(respuesta, "data") and respuesta.data else []
+        return datos, None
+    except Exception as exc:
+        return [], f"No se pudieron recuperar las facturas desde Supabase: {exc}"
+
+
+# ==============================================================================
+# 4. MÓDULO DE EXTRACCIÓN HÍBRIDA (GROQ / GEMINI / OLLAMA LOCAL + REGEX)
 # ==============================================================================
 
 def obtener_modelos_ollama(url_base: str = "http://localhost:11434") -> Tuple[List[str], Optional[str]]:
-    """
-    Consulta automáticamente la API local de Ollama para listar los modelos instalados
-    sin que el usuario tenga que recordar el nombre o la versión.
-    """
+    """Consulta automáticamente la API local de Ollama para listar los modelos instalados."""
     try:
         respuesta = requests.get(f"{url_base.rstrip('/')}/api/tags", timeout=3)
         respuesta.raise_for_status()
@@ -237,13 +406,11 @@ def obtener_modelos_nube(api_key: str) -> Tuple[List[str], str, Optional[str]]:
                 if "generateContent" in metodos and "gemini" in nombre.lower():
                     if not any(excl in nombre.lower() for excl in ["vision", "embedding", "imagen", "veo", "tts", "audio"]):
                         modelos.append(nombre)
-            # Priorizar modelos flash rápidos y estables
             modelos.sort(key=lambda x: (0 if "2.5-flash" in x else 1 if "2.0-flash" in x else 2 if "flash" in x else 3, x))
             return modelos, "google", None
         except Exception as exc:
             return [], "google", f"Error al consultar modelos de Google Gemini: {exc}"
 
-    # Groq u OpenRouter (compatibles con OpenAI)
     url_modelos = (
         "https://openrouter.ai/api/v1/models"
         if proveedor == "openrouter"
@@ -260,7 +427,17 @@ def obtener_modelos_nube(api_key: str) -> Tuple[List[str], str, Optional[str]]:
             return [], proveedor, f"Error en API ({resp.status_code}): {detalle}"
 
         datos = resp.json().get("data", [])
-        palabras_excluidas = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "allam", "distil-whisper", "orpheus")
+        palabras_excluidas = (
+            "whisper",
+            "tts",
+            "guard",
+            "safeguard",
+            "embed",
+            "playai",
+            "allam",
+            "distil-whisper",
+            "orpheus",
+        )
         modelos = [
             m.get("id", "")
             for m in datos
@@ -383,7 +560,6 @@ def extraer_con_api_nube(
     try:
         resp = enviar_peticion(modelo, forzar_json=True)
 
-        # Si el modelo elegido fue retirado o no está habilitado (404), usar automáticamente el primer modelo activo de la cuenta
         if resp.status_code == 404:
             modelos_activos, _, _ = obtener_modelos_nube(clave_limpia)
             for mod_alternativo in modelos_activos[:3]:
@@ -393,7 +569,6 @@ def extraer_con_api_nube(
                 if resp.ok:
                     break
 
-        # Si el modelo no soporta response_format json_object (400), reintentar sin response_format
         if resp.status_code == 400:
             resp = enviar_peticion(modelo, forzar_json=False)
 
@@ -422,7 +597,6 @@ def extraer_con_reglas_regex(texto_ocr: str) -> Dict[str, str]:
     """
     datos = {clave: VALOR_NO_IDENTIFICADO for clave in CAMPOS_COMPROBANTE}
 
-    # 1. Tipo de documento
     match_tipo = re.search(
         r"\b(FACTURA\s*[ABC]|TICKET\s*FACTURA\s*[ABC]|TICKET|RECIBO|NOTA\s*DE\s*CR[EÉ]DITO)\b",
         texto_ocr,
@@ -431,24 +605,20 @@ def extraer_con_reglas_regex(texto_ocr: str) -> Dict[str, str]:
     if match_tipo:
         datos["tipo_documento"] = match_tipo.group(1).upper()
 
-    # 2. CUIT (formato XX-XXXXXXXX-X o 11 dígitos precedidos por CUIT)
     match_cuit = re.search(r"\b(20|23|24|27|30|33|34)[-\s]?(\d{8})[-\s]?(\d)\b", texto_ocr)
     if match_cuit:
         datos["cuit"] = f"{match_cuit.group(1)}-{match_cuit.group(2)}-{match_cuit.group(3)}"
 
-    # 3. Fecha de emisión (DD/MM/AAAA o DD-MM-AAAA)
     match_fecha = re.search(r"\b(0?[1-9]|[12]\d|3[01])[/-](0?[1-9]|1[0-2])[/-](20\d{2}|\d{2})\b", texto_ocr)
     if match_fecha:
         dia, mes, anio = match_fecha.groups()
         anio = f"20{anio}" if len(anio) == 2 else anio
         datos["fecha_emision"] = f"{int(dia):02d}/{int(mes):02d}/{anio}"
 
-    # 4. Número de comprobante (ej: 0001-00012345)
     match_nro = re.search(r"\b(\d{4,5})\s*[-–]\s*(\d{8})\b", texto_ocr)
     if match_nro:
         datos["numero_comprobante"] = f"{match_nro.group(1)}-{match_nro.group(2)}"
 
-    # 5. Importe total
     match_total = re.search(
         r"TOTAL\s*(?:A\s*PAGAR)?\s*[:$]?\s*\$?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))",
         texto_ocr,
@@ -457,7 +627,6 @@ def extraer_con_reglas_regex(texto_ocr: str) -> Dict[str, str]:
     if match_total:
         datos["importe_total"] = match_total.group(1)
 
-    # 6. Moneda
     if re.search(r"\b(USD|U\$S|D[OÓ]LARES)\b", texto_ocr, re.IGNORECASE):
         datos["moneda"] = "USD"
     elif "$" in texto_ocr or re.search(r"\b(ARS|PESOS)\b", texto_ocr, re.IGNORECASE):
@@ -468,8 +637,8 @@ def extraer_con_reglas_regex(texto_ocr: str) -> Dict[str, str]:
 
 def aplicar_refuerzo_regex(datos_ia: Dict[str, str], texto_ocr: str) -> Dict[str, str]:
     """
-    Mejora híbrida (Objetivo Específico 6): si el LLM omitió el CUIT, la fecha o el número
-    de comprobante pero tienen un patrón exacto en el texto OCR, los completa con Regex.
+    Mejora híbrida: si el LLM omitió el CUIT, la fecha o el número de comprobante
+    pero tienen un patrón exacto en el texto OCR, los completa con Regex.
     """
     respaldo = extraer_con_reglas_regex(texto_ocr)
     resultado = dict(datos_ia)
@@ -480,7 +649,7 @@ def aplicar_refuerzo_regex(datos_ia: Dict[str, str], texto_ocr: str) -> Dict[str
 
 
 # ==============================================================================
-# 4. MÓDULO DE EVALUACIÓN DE EXACTITUD (COMPARACIÓN CON REFERENCIA MANUAL)
+# 5. MÓDULO DE EVALUACIÓN DE EXACTITUD (COMPARACIÓN CON REFERENCIA MANUAL)
 # ==============================================================================
 
 def evaluar_extraccion(datos_extraidos: Dict[str, str], datos_referencia: Dict[str, str]) -> Tuple[pd.DataFrame, float]:
@@ -496,7 +665,6 @@ def evaluar_extraccion(datos_extraidos: Dict[str, str], datos_referencia: Dict[s
         val_ext = str(datos_extraidos.get(clave, VALOR_NO_IDENTIFICADO)).strip()
         val_ref = str(datos_referencia.get(clave, VALOR_NO_IDENTIFICADO)).strip()
 
-        # Normalización suave para comparar montos e ignorar diferencias de mayúsculas/espacios
         norm_ext = val_ext.lower().replace("$", "").replace(" ", "")
         norm_ref = val_ref.lower().replace("$", "").replace(" ", "")
 
@@ -518,7 +686,7 @@ def evaluar_extraccion(datos_extraidos: Dict[str, str], datos_referencia: Dict[s
 
 
 # ==============================================================================
-# 5. INTERFAZ WEB EN STREAMLIT (COMPATIBLE CON PC Y NAVEGADOR MÓVIL)
+# 6. REDISEÑO UI/UX: ESTILO EDITORIAL CÁLIDO Y MINIMALISTA
 # ==============================================================================
 
 def inicializar_estado_sesion() -> None:
@@ -528,12 +696,25 @@ def inicializar_estado_sesion() -> None:
         st.session_state["datos_actuales"] = {k: VALOR_NO_IDENTIFICADO for k in CAMPOS_COMPROBANTE}
     if "historial_comprobantes" not in st.session_state:
         st.session_state["historial_comprobantes"] = []
+    if "usuario_supabase" not in st.session_state:
+        st.session_state["usuario_supabase"] = None
+    if "mostrar_panel_auth" not in st.session_state:
+        st.session_state["mostrar_panel_auth"] = False
+    if "ultimo_archivo_bytes" not in st.session_state:
+        st.session_state["ultimo_archivo_bytes"] = None
+    if "ultimo_archivo_nombre" not in st.session_state:
+        st.session_state["ultimo_archivo_nombre"] = "comprobante.png"
+    if "ultimo_archivo_mime" not in st.session_state:
+        st.session_state["ultimo_archivo_mime"] = "image/png"
 
 
 def aplicar_estilos_editoriales() -> None:
     """
-    Inyecta CSS personalizado con estética editorial cálida, minimalista y luminosa
-    (inspirada en el estilo 'Bloom Coaching') sin alterar la funcionalidad de la app.
+    Inyecta CSS personalizado con estética editorial cálida, minimalista y luminosa:
+    - Fondo general color arena suave (#F7F4EF)
+    - Contenedores/tarjetas en blanco cálido (#FFFFFF) con bordes sutiles (#E2DDD5)
+    - Textos en gris carbón (#2C2A29)
+    - Acento en azul cielo pastel (#87B1DC) con texto oscuro
     """
     st.markdown(
         """
@@ -552,10 +733,10 @@ def aplicar_estilos_editoriales() -> None:
             --text-primary: #2C2A29;
             --text-secondary: #6E6A64;
 
-            /* Variables de Streamlit y Glide Data Grid (st.data_editor / st.dataframe) para forzar modo claro cálido */
+            /* Variables de Streamlit y Glide Data Grid (st.data_editor / st.dataframe) */
             --primary-color: #87B1DC;
             --background-color: #F7F4EF;
-            --secondary-background-color: #FAF8F5;
+            --secondary-background-color: #FFFFFF;
             --text-color: #2C2A29;
             --gdg-bg-cell: #FFFFFF;
             --gdg-bg-cell-medium: #FAF8F5;
@@ -580,7 +761,6 @@ def aplicar_estilos_editoriales() -> None:
             color-scheme: light !important;
         }
 
-        /* Tipografía y fondo general cálido */
         html, body, [class*="css"], .stApp, [data-testid="stAppViewContainer"] {
             font-family: 'Plus Jakarta Sans', 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
             background-color: var(--bg-main) !important;
@@ -594,12 +774,11 @@ def aplicar_estilos_editoriales() -> None:
         }
 
         .block-container {
-            padding-top: 2rem !important;
+            padding-top: 1.5rem !important;
             padding-bottom: 3.5rem !important;
             max-width: 1280px !important;
         }
 
-        /* Textos, títulos y etiquetas */
         h1, h2, h3, h4, h5, h6 {
             font-family: 'Plus Jakarta Sans', sans-serif !important;
             color: var(--text-primary) !important;
@@ -611,7 +790,7 @@ def aplicar_estilos_editoriales() -> None:
             color: var(--text-primary);
         }
 
-        [data-testid="stCaptionContainer"], small, .editorial-subtitle {
+        [data-testid="stCaptionContainer"], small {
             color: var(--text-secondary) !important;
         }
 
@@ -621,7 +800,89 @@ def aplicar_estilos_editoriales() -> None:
             font-size: 0.92rem !important;
         }
 
-        /* Barra lateral (Sidebar) en tono arena suave */
+        /* Barra superior limpia de créditos */
+        .editorial-topbar-credits {
+            background-color: #FFFFFF;
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            padding: 0.65rem 1.15rem;
+            font-size: 0.86rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 10px rgba(44, 42, 41, 0.03);
+        }
+
+        .editorial-topbar-credits strong {
+            color: var(--text-primary);
+        }
+
+        /* Hero Banner Editorial Minimalista */
+        .bloom-hero {
+            position: relative;
+            width: 100%;
+            min-height: 240px;
+            border-radius: 8px;
+            overflow: hidden;
+            margin: 0.6rem 0 1.6rem 0;
+            background-image:
+                linear-gradient(180deg, rgba(34, 31, 28, 0.70) 0%, rgba(34, 31, 28, 0.56) 50%, rgba(34, 31, 28, 0.74) 100%),
+                url('https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1600&q=80');
+            background-size: cover;
+            background-position: center;
+            box-shadow: 0 10px 28px rgba(44, 42, 41, 0.07);
+            border: 1px solid #DCD6CC;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 2.2rem 2rem;
+        }
+
+        .bloom-hero-eyebrow {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.76rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.22em;
+            color: #EFECE6 !important;
+            margin-bottom: 0.7rem;
+            background: rgba(255, 255, 255, 0.12);
+            padding: 0.3rem 0.85rem;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .bloom-hero-title {
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+            font-size: clamp(1.85rem, 3.2vw, 2.75rem) !important;
+            font-weight: 700 !important;
+            color: #FFFFFF !important;
+            line-height: 1.2 !important;
+            margin: 0 0 0.8rem 0 !important;
+            letter-spacing: -0.02em;
+        }
+
+        .bloom-underline {
+            display: inline-block;
+            padding-bottom: 3px;
+            border-bottom: 4px solid #87B1DC;
+        }
+
+        .bloom-hero-subtitle {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 1rem;
+            color: rgba(247, 244, 239, 0.92) !important;
+            max-width: 680px;
+            margin: 0 auto;
+            font-weight: 400;
+            line-height: 1.55;
+        }
+
+        /* Sidebar cálida */
         [data-testid="stSidebar"] {
             background-color: var(--bg-sidebar) !important;
             border-right: 1px solid var(--border-subtle) !important;
@@ -631,113 +892,23 @@ def aplicar_estilos_editoriales() -> None:
             color: var(--text-primary);
         }
 
-        [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
-            color: var(--text-primary) !important;
-            font-size: 1.05rem !important;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            margin-top: 0.5rem;
-        }
-
-        /* Sección Hero (Encabezado estilo Landing Page Editorial) */
-        .bloom-hero {
-            position: relative;
-            width: 100%;
-            min-height: 290px;
-            border-radius: 6px;
-            overflow: hidden;
-            margin-bottom: 2rem;
-            background-image:
-                linear-gradient(180deg, rgba(34, 31, 28, 0.72) 0%, rgba(34, 31, 28, 0.56) 50%, rgba(34, 31, 28, 0.76) 100%),
-                url('https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1600&q=80');
-            background-size: cover;
-            background-position: center;
-            box-shadow: 0 12px 32px rgba(44, 42, 41, 0.08);
-            border: 1px solid #DCD6CC;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            padding: 1.75rem 2.5rem 2.5rem 2.5rem;
-        }
-
-        .bloom-hero-topbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            width: 100%;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.22);
-            padding-bottom: 0.9rem;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-
-        .bloom-hero-tag {
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 0.78rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.2em;
-            color: #F7F4EF !important;
-        }
-
-        .bloom-hero-authors {
-            font-family: 'DM Sans', sans-serif;
-            font-size: 0.86rem;
-            font-weight: 500;
-            letter-spacing: 0.04em;
-            color: #EFECE6 !important;
-        }
-
-        .bloom-hero-center {
-            text-align: center;
-            max-width: 820px;
-            margin: 2.2rem auto 1.2rem auto;
-        }
-
-        .bloom-hero-title {
-            font-family: 'Plus Jakarta Sans', sans-serif !important;
-            font-size: clamp(1.9rem, 3.4vw, 2.85rem) !important;
-            font-weight: 700 !important;
-            color: #FFFFFF !important;
-            line-height: 1.2 !important;
-            margin: 0 0 0.85rem 0 !important;
-            letter-spacing: -0.02em;
-        }
-
-        .bloom-underline {
-            display: inline-block;
-            position: relative;
-            padding-bottom: 4px;
-            border-bottom: 4px solid #87B1DC;
-        }
-
-        .bloom-hero-subtitle {
-            font-family: 'DM Sans', sans-serif;
-            font-size: 1.02rem;
-            color: rgba(247, 244, 239, 0.9) !important;
-            max-width: 650px;
-            margin: 0 auto;
-            font-weight: 400;
-            line-height: 1.55;
-        }
-
-        /* Tarjetas y contenedores con borde sutil y sombra cálida */
+        /* Contenedores y tarjetas en blanco cálido (#FFFFFF) con bordes sutiles (#E2DDD5) */
         [data-testid="stVerticalBlockBorderWrapper"] {
             background-color: var(--bg-card) !important;
             border: 1px solid var(--border-subtle) !important;
             border-radius: 6px !important;
-            padding: 1.5rem 1.6rem !important;
-            box-shadow: 0 6px 22px rgba(44, 42, 41, 0.04) !important;
+            padding: 1.45rem 1.55rem !important;
+            box-shadow: 0 6px 20px rgba(44, 42, 41, 0.04) !important;
         }
 
-        /* Pestañas (st.tabs) estilo barra de navegación limpia y centrada */
+        /* Pestañas (st.tabs) con indicador azul cielo pastel (#87B1DC) */
         [data-testid="stTabs"] [data-baseweb="tab-list"] {
             justify-content: center !important;
             gap: 2.2rem !important;
             background-color: transparent !important;
             border-bottom: 1px solid var(--border-subtle) !important;
             padding-bottom: 0 !important;
-            margin-bottom: 1.5rem !important;
+            margin-bottom: 1.4rem !important;
         }
 
         [data-testid="stTabs"] [data-baseweb="tab"] {
@@ -766,21 +937,23 @@ def aplicar_estilos_editoriales() -> None:
             height: 3px !important;
         }
 
-        /* Botones primarios, secundarios y de descarga en azul pastel (#87B1DC) y bordes 4px */
+        /* Botones principales y secundarios con azul cielo pastel (#87B1DC) y texto oscuro (#2C2A29) */
         .stButton > button[kind="primary"],
-        [data-testid="stBaseButton-primary"] {
+        [data-testid="stBaseButton-primary"],
+        .stFormSubmitButton > button {
             background-color: var(--accent-blue) !important;
             color: var(--text-primary) !important;
             border: 1px solid #75A0CB !important;
             border-radius: 4px !important;
             font-weight: 600 !important;
-            padding: 0.6rem 1.2rem !important;
+            padding: 0.58rem 1.15rem !important;
             box-shadow: 0 2px 6px rgba(135, 177, 220, 0.25) !important;
             transition: all 0.2s ease !important;
         }
 
         .stButton > button[kind="primary"]:hover,
-        [data-testid="stBaseButton-primary"]:hover {
+        [data-testid="stBaseButton-primary"]:hover,
+        .stFormSubmitButton > button:hover {
             background-color: var(--accent-blue-hover) !important;
             color: var(--text-primary) !important;
             border-color: #628EB9 !important;
@@ -806,25 +979,20 @@ def aplicar_estilos_editoriales() -> None:
             color: var(--text-primary) !important;
         }
 
-        .stButton > button *, .stDownloadButton > button * {
+        .stButton > button *, .stDownloadButton > button *, .stFormSubmitButton > button * {
             color: var(--text-primary) !important;
         }
 
-        /* Radio buttons y Checkboxes con acento azul pastel (#87B1DC) */
-        div[role="radiogroup"] label > div:first-child {
-            border-color: #B9B2A8 !important;
-        }
-
-        div[role="radiogroup"] label[data-baseweb="radio"] input:checked + div,
-        [data-baseweb="radio"] > div:first-child {
-            accent-color: var(--accent-blue) !important;
-        }
-
+        /* Toggle, Radio buttons y Checkboxes en azul cielo pastel (#87B1DC) */
         input[type="radio"], input[type="checkbox"] {
             accent-color: var(--accent-blue) !important;
         }
 
-        /* Inputs de texto, áreas de texto y selectboxes en modo claro */
+        [data-baseweb="checkbox"] > div:first-child {
+            border-color: #87B1DC !important;
+        }
+
+        /* Inputs, Textareas y Selectboxes */
         [data-baseweb="input"] > div,
         [data-baseweb="textarea"] > div,
         [data-baseweb="select"] > div {
@@ -848,7 +1016,7 @@ def aplicar_estilos_editoriales() -> None:
             box-shadow: 0 0 0 2px var(--accent-blue-soft) !important;
         }
 
-        /* Menús desplegables (popovers de selectbox) */
+        /* Popovers y listas desplegables */
         [data-baseweb="popover"], [data-baseweb="menu"], ul[role="listbox"] {
             background-color: #FFFFFF !important;
             color: var(--text-primary) !important;
@@ -864,27 +1032,20 @@ def aplicar_estilos_editoriales() -> None:
             background-color: var(--accent-blue-soft) !important;
         }
 
-        /* File Uploader claro, cálido y minimalista */
+        /* File Uploader y Expander */
         [data-testid="stFileUploader"] section,
         [data-testid="stFileUploaderDropzone"] {
             background-color: var(--bg-card-warm) !important;
             border: 1.5px dashed #C9C2B8 !important;
             border-radius: 4px !important;
-            padding: 1.35rem !important;
+            padding: 1.25rem !important;
             color: var(--text-primary) !important;
-            transition: border-color 0.2s ease, background-color 0.2s ease;
         }
 
         [data-testid="stFileUploader"] section:hover,
         [data-testid="stFileUploaderDropzone"]:hover {
             border-color: var(--accent-blue) !important;
             background-color: #F3F6FA !important;
-        }
-
-        [data-testid="stFileUploaderDropzone"] span,
-        [data-testid="stFileUploaderDropzone"] small,
-        [data-testid="stFileUploaderDropzone"] div {
-            color: var(--text-secondary) !important;
         }
 
         [data-testid="stFileUploaderDropzone"] button {
@@ -895,29 +1056,19 @@ def aplicar_estilos_editoriales() -> None:
             font-weight: 600 !important;
         }
 
-        [data-testid="stFileUploaderDropzone"] button:hover {
-            border-color: var(--accent-blue) !important;
-            background-color: var(--accent-blue-soft) !important;
-        }
-
-        /* Expander (st.expander) limpio y claro */
         [data-testid="stExpander"], details {
             background-color: var(--bg-card-warm) !important;
             border: 1px solid var(--border-subtle) !important;
             border-radius: 4px !important;
             overflow: hidden;
-            margin-bottom: 1rem !important;
+            margin-bottom: 0.9rem !important;
         }
 
         [data-testid="stExpander"] summary, details > summary {
             background-color: var(--bg-card-warm) !important;
             color: var(--text-primary) !important;
             font-weight: 600 !important;
-            padding: 0.75rem 1rem !important;
-        }
-
-        [data-testid="stExpander"] summary:hover, details > summary:hover {
-            background-color: #F0ECE3 !important;
+            padding: 0.7rem 1rem !important;
         }
 
         [data-testid="stExpanderDetails"] {
@@ -926,7 +1077,6 @@ def aplicar_estilos_editoriales() -> None:
             padding: 1rem !important;
         }
 
-        /* Tablas editables (st.data_editor y st.dataframe) */
         [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
             border: 1px solid var(--border-subtle) !important;
             border-radius: 4px !important;
@@ -934,22 +1084,11 @@ def aplicar_estilos_editoriales() -> None:
             overflow: hidden;
         }
 
-        /* Métricas (st.metric) en tarjeta editorial */
         [data-testid="stMetric"] {
             background-color: var(--bg-card-warm) !important;
             border: 1px solid var(--border-subtle) !important;
             border-radius: 4px !important;
             padding: 1.1rem 1.25rem !important;
-        }
-
-        [data-testid="stMetricLabel"] {
-            color: var(--text-secondary) !important;
-            font-weight: 600 !important;
-        }
-
-        [data-testid="stMetricValue"] {
-            color: var(--text-primary) !important;
-            font-weight: 700 !important;
         }
         </style>
         """,
@@ -957,29 +1096,143 @@ def aplicar_estilos_editoriales() -> None:
     )
 
 
-def renderizar_hero_banner() -> None:
-    """Renderiza el encabezado estilo Landing Page editorial con subrayado en azul pastel."""
+def renderizar_encabezado_y_auth(cliente_supabase: Optional[Client], supabase_configurado: bool) -> None:
+    """
+    Renderiza:
+    1. La barra superior limpia con los créditos del proyecto a la izquierda y el botón
+       'Iniciar sesión / Cerrar sesión' a la derecha.
+    2. El panel desplegable de Login / Registro con Supabase (o estado de Modo Demo Local).
+    3. El Hero Banner minimalista con subrayado decorativo en azul pastel (#87B1DC).
+    """
+    usuario = st.session_state.get("usuario_supabase")
+
+    col_creditos, col_boton_auth = st.columns([3.8, 1.2], gap="small")
+
+    with col_creditos:
+        estado_badge = (
+            f"🟢 Sesión activa: {usuario['email']}"
+            if usuario
+            else ("☁️ Supabase listo" if supabase_configurado else "🧪 Modo Demo Local activo")
+        )
+        st.markdown(
+            f"""
+            <div class="editorial-topbar-credits">
+                <span><strong>Trabajo Final Integrador — EDI II (Ciencias de Datos)</strong> &nbsp;|&nbsp; Integrantes: Alan Bustamante y Christian Martínez</span>
+                <span>{estado_badge}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_boton_auth:
+        if usuario:
+            if st.button("🚪 Cerrar sesión", key="btn_logout_top", use_container_width=True):
+                if cliente_supabase:
+                    try:
+                        cliente_supabase.auth.sign_out()
+                    except Exception:
+                        pass
+                st.session_state["usuario_supabase"] = None
+                st.session_state["mostrar_panel_auth"] = False
+                st.rerun()
+        else:
+            etiqueta_btn = "✕ Cerrar acceso" if st.session_state["mostrar_panel_auth"] else "👤 Iniciar sesión / Registro"
+            if st.button(etiqueta_btn, key="btn_login_top", type="primary", use_container_width=True):
+                st.session_state["mostrar_panel_auth"] = not st.session_state["mostrar_panel_auth"]
+                st.rerun()
+
+    # Panel de autenticación (Iniciar Sesión / Registrarse) cuando el usuario lo despliega
+    if st.session_state["mostrar_panel_auth"] and not usuario:
+        with st.container(border=True):
+            st.subheader("🔐 Acceso de Usuarios (Supabase Auth)")
+            if not supabase_configurado or cliente_supabase is None:
+                st.info(
+                    "🧪 **Modo Demo Local activo:** Aún no se configuraron `SUPABASE_URL` y `SUPABASE_KEY` en "
+                    "`st.secrets` (o variables de entorno). Puedes usar todas las funciones de diseño, filtro escáner OpenCV, "
+                    "OCR y extracción con Groq normalmente en memoria local."
+                )
+            else:
+                tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Crear Cuenta Nueva"])
+
+                with tab_login:
+                    with st.form("form_login_supabase", clear_on_submit=False):
+                        email_in = st.text_input("Correo electrónico:", placeholder="usuario@ejemplo.com")
+                        pass_in = st.text_input("Contraseña:", type="password", placeholder="••••••••")
+                        submit_login = st.form_submit_button("Ingresar a mi cuenta", use_container_width=True)
+
+                        if submit_login:
+                            if not email_in.strip() or not pass_in:
+                                st.warning("Completa tu correo electrónico y contraseña.")
+                            else:
+                                try:
+                                    res = cliente_supabase.auth.sign_in_with_password(
+                                        {"email": email_in.strip(), "password": pass_in}
+                                    )
+                                    if res and res.user:
+                                        st.session_state["usuario_supabase"] = {
+                                            "id": str(res.user.id),
+                                            "email": str(res.user.email),
+                                        }
+                                        st.session_state["mostrar_panel_auth"] = False
+                                        st.success(f"¡Bienvenido, {res.user.email}!")
+                                        st.rerun()
+                                except Exception as exc_auth:
+                                    st.error(f"No se pudo iniciar sesión: {exc_auth}")
+
+                with tab_registro:
+                    with st.form("form_registro_supabase", clear_on_submit=False):
+                        email_reg = st.text_input("Correo electrónico para registro:", placeholder="nombre@correo.com")
+                        pass_reg = st.text_input(
+                            "Contraseña (mínimo 6 caracteres):", type="password", placeholder="••••••••"
+                        )
+                        submit_reg = st.form_submit_button("Registrarme en la plataforma", use_container_width=True)
+
+                        if submit_reg:
+                            if not email_reg.strip() or len(pass_reg) < 6:
+                                st.warning("Ingresa un correo válido y una contraseña de al menos 6 caracteres.")
+                            else:
+                                try:
+                                    res_up = cliente_supabase.auth.sign_up(
+                                        {"email": email_reg.strip(), "password": pass_reg}
+                                    )
+                                    if res_up and res_up.user:
+                                        if res_up.session:
+                                            st.session_state["usuario_supabase"] = {
+                                                "id": str(res_up.user.id),
+                                                "email": str(res_up.user.email),
+                                            }
+                                            st.session_state["mostrar_panel_auth"] = False
+                                            st.success("¡Cuenta creada y sesión iniciada!")
+                                            st.rerun()
+                                        else:
+                                            st.success(
+                                                "¡Registro exitoso! Revisa tu correo si tienes activada la confirmación "
+                                                "por email en Supabase, o inicia sesión en la pestaña 'Iniciar Sesión'."
+                                            )
+                                except Exception as exc_reg:
+                                    st.error(f"Error al registrar usuario: {exc_reg}")
+
+    # Hero Banner Principal
     st.markdown(
         """
         <div class="bloom-hero">
-            <div class="bloom-hero-topbar">
-                <span class="bloom-hero-tag">EDI II &bull; CIENCIAS DE DATOS</span>
-                <span class="bloom-hero-authors">Alan Bustamante y Christian Martínez</span>
-            </div>
-            <div class="bloom-hero-center">
-                <h1 class="bloom-hero-title">
-                    Lector Inteligente de Comprobantes y <span class="bloom-underline">Facturas</span>
-                </h1>
-                <p class="bloom-hero-subtitle">
-                    Reconocimiento óptico de caracteres, extracción contable estructurada con IA híbrida,
-                    revisión asistida y evaluación de exactitud.
-                </p>
-            </div>
+            <div class="bloom-hero-eyebrow">EDI II &bull; CIENCIAS DE DATOS</div>
+            <h1 class="bloom-hero-title">
+                Lector Inteligente de Comprobantes y <span class="bloom-underline">Facturas</span>
+            </h1>
+            <p class="bloom-hero-subtitle">
+                Preprocesamiento con filtro escáner OpenCV, lectura OCR con Tesseract,
+                extracción contable estructurada con Groq / IA y resguardo en la nube con Supabase.
+            </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+
+# ==============================================================================
+# 7. APLICACIÓN PRINCIPAL DE STREAMLIT
+# ==============================================================================
 
 def main() -> None:
     st.set_page_config(
@@ -989,7 +1242,12 @@ def main() -> None:
     )
     inicializar_estado_sesion()
     aplicar_estilos_editoriales()
-    renderizar_hero_banner()
+
+    supabase_url, supabase_key = obtener_credenciales_supabase()
+    cliente_supabase = inicializar_cliente_supabase(supabase_url, supabase_key)
+    supabase_configurado = cliente_supabase is not None
+
+    renderizar_encabezado_y_auth(cliente_supabase, supabase_configurado)
 
     # --------------------------------------------------------------------------
     # BARRA LATERAL: CONFIGURACIÓN HÍBRIDA Y DIAGNÓSTICO AUTOMÁTICO
@@ -1011,12 +1269,17 @@ def main() -> None:
                 pytesseract.pytesseract.tesseract_cmd = ruta_manual
                 st.success("Ruta manual de Tesseract configurada.")
 
+        # 2. Estado de Supabase / Modo Demo Local
+        st.subheader("Base de Datos y Storage")
+        usuario_actual = st.session_state.get("usuario_supabase")
+        if usuario_actual and supabase_configurado:
+            st.success(f"☁️ Conectado como: {usuario_actual['email']}")
+        elif supabase_configurado:
+            st.info("☁️ Supabase disponible. Inicia sesión arriba a la derecha para guardar tus fotos en la nube.")
+        else:
+            st.caption("🧪 **Modo Demo Local activo** (Configura `SUPABASE_URL` y `SUPABASE_KEY` para persistencia en la nube).")
+
         st.subheader("Mejoras de Calidad (TFI Obj. 6)")
-        aplicar_preprocesamiento = st.checkbox(
-            "Preprocesar imagen (Contraste y Escala de Grises)",
-            value=True,
-            help="Mejora la lectura de tickets térmicos o fotos tomadas con celular.",
-        )
         aplicar_hibrido_regex = st.checkbox(
             "Refuerzo con Expresiones Regulares (CUIT/Fechas)",
             value=True,
@@ -1131,14 +1394,24 @@ def main() -> None:
     )
 
     # ==========================================================================
-    # PESTAÑA 1: CARGA, OCR, EXTRACCIÓN Y REVISIÓN MANUAL
+    # PESTAÑA 1: CARGA, OPTIMIZACIÓN OPENCV, OCR, EXTRACCIÓN Y REVISIÓN MANUAL
     # ==========================================================================
     with tab_lector:
-        col_carga, col_resultados = st.columns([1, 1.2], gap="large")
+        col_carga, col_resultados = st.columns([1.05, 1.15], gap="large")
 
         with col_carga:
             with st.container(border=True):
                 st.subheader("1. Entrada del Comprobante")
+
+                usar_filtro_escaner = st.toggle(
+                    "Mejorar calidad de foto para OCR (Filtro Escáner)",
+                    value=True,
+                    help=(
+                        "Ejecuta optimizar_para_tesseract(pil_image) con OpenCV: escala de grises, "
+                        "upscaling cúbico, filtro bilateral y binarización adaptativa (blockSize=31, C=15)."
+                    ),
+                )
+
                 metodo_entrada = st.radio(
                     "Origen de la imagen:",
                     options=["Subir archivo (JPG, PNG)", "Tomar foto con cámara del celular / PC"],
@@ -1155,22 +1428,33 @@ def main() -> None:
                     archivo_imagen = st.camera_input("Captura el comprobante con tu cámara:")
 
                 if archivo_imagen is not None:
-                    imagen_original = Image.open(archivo_imagen)
-                    imagen_procesada = preprocesar_imagen(imagen_original, aplicar_mejora=aplicar_preprocesamiento)
+                    # Guardar bytes originales en sesión para subirlos a Supabase Storage al confirmar
+                    bytes_img = archivo_imagen.getvalue()
+                    st.session_state["ultimo_archivo_bytes"] = bytes_img
+                    st.session_state["ultimo_archivo_nombre"] = getattr(archivo_imagen, "name", "captura_camara.png")
+                    st.session_state["ultimo_archivo_mime"] = getattr(archivo_imagen, "type", "image/png") or "image/png"
 
-                    vista_img = st.radio(
-                        "Vista previa:",
-                        options=["Imagen Original", "Imagen Preprocesada para OCR"],
-                        horizontal=True,
+                    imagen_original = Image.open(io.BytesIO(bytes_img))
+                    imagen_optimizada = (
+                        optimizar_para_tesseract(imagen_original)
+                        if usar_filtro_escaner
+                        else imagen_original.convert("RGB")
                     )
-                    if vista_img == "Imagen Original":
-                        st.image(imagen_original, caption="Comprobante original", use_container_width=True)
-                    else:
-                        st.image(imagen_procesada, caption="Preprocesada para OCR", use_container_width=True)
+
+                    with st.expander("🔍 Comparar Foto Original vs. Foto Optimizada (Filtro Escáner)", expanded=True):
+                        col_img_orig, col_img_opt = st.columns(2)
+                        with col_img_orig:
+                            st.image(imagen_original, caption="Foto Original", use_container_width=True)
+                        with col_img_opt:
+                            st.image(
+                                imagen_optimizada,
+                                caption="Optimizada para Tesseract" if usar_filtro_escaner else "Sin Filtro Escáner",
+                                use_container_width=True,
+                            )
 
                     if st.button("🚀 Procesar Comprobante (OCR + IA)", type="primary", use_container_width=True):
-                        with st.spinner("Ejecutando OCR con Tesseract..."):
-                            texto_detectado, alerta_ocr = ejecutar_ocr(imagen_procesada, idioma="spa")
+                        with st.spinner("Ejecutando Tesseract OCR (--oem 3 --psm 6)..."):
+                            texto_detectado, alerta_ocr = ejecutar_ocr(imagen_optimizada, idioma="spa")
                             st.session_state["texto_ocr"] = texto_detectado
 
                         if alerta_ocr:
@@ -1179,10 +1463,10 @@ def main() -> None:
                         if not texto_detectado or len(texto_detectado.strip()) < 10:
                             st.error(
                                 "⚠️ La imagen no pudo procesarse correctamente o contiene muy poco texto legible. "
-                                "Intenta con una foto más nítida o mejor iluminada."
+                                "Intenta con una foto más nítida o cambia el estado del Filtro Escáner."
                             )
                         else:
-                            with st.spinner("Extrayendo campos estructurados..."):
+                            with st.spinner("Extrayendo los 9 campos estructurados con IA..."):
                                 error_ia = None
                                 if modo_ia.startswith("1."):
                                     datos_ext, error_ia = extraer_con_ollama_local(
@@ -1215,15 +1499,14 @@ def main() -> None:
             with st.container(border=True):
                 st.subheader("2. Revisión y Corrección Manual")
 
-                with st.expander("🔍 Ver texto crudo reconocido por OCR", expanded=False):
+                with st.expander("📝 Ver texto crudo reconocido por Tesseract OCR", expanded=False):
                     texto_editable_ocr = st.text_area(
-                        "Texto extraído por Tesseract:",
+                        "Texto extraído por Tesseract (--oem 3 --psm 6):",
                         value=st.session_state["texto_ocr"],
-                        height=180,
+                        height=170,
                     )
                     st.session_state["texto_ocr"] = texto_editable_ocr
 
-                # Advertencia de campos críticos faltantes (Funcionalidad 7 del TFI)
                 datos_act = st.session_state["datos_actuales"]
                 campos_criticos = ["emisor", "fecha_emision", "importe_total"]
                 faltantes = [
@@ -1237,7 +1520,6 @@ def main() -> None:
                         f"**{', '.join(faltantes)}**. Puedes completarlos manualmente en la tabla."
                     )
 
-                # Construcción de tabla editable para revisión humana (Funcionalidades 4 y 5 del TFI)
                 df_revision = pd.DataFrame(
                     [
                         {
@@ -1254,7 +1536,7 @@ def main() -> None:
                 df_editado = st.data_editor(
                     df_revision,
                     column_config={
-                        "Clave": None,  # Oculta la columna técnica
+                        "Clave": None,
                         "Campo del Comprobante": st.column_config.TextColumn(
                             "Campo del Comprobante", disabled=True, width="medium"
                         ),
@@ -1267,7 +1549,6 @@ def main() -> None:
                     key="editor_campos",
                 )
 
-                # Sincronizar los cambios hechos por el usuario
                 datos_revisados = {
                     fila["Clave"]: str(fila["Valor Detectado (Editable)"]).strip() or VALOR_NO_IDENTIFICADO
                     for _, fila in df_editado.iterrows()
@@ -1277,11 +1558,42 @@ def main() -> None:
                 col_btn1, col_btn2, col_btn3 = st.columns(3)
 
                 with col_btn1:
-                    if st.button("➕ Guardar en el Registro", type="primary", use_container_width=True):
-                        registro_nuevo = {"fecha_carga": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-                        registro_nuevo.update(datos_revisados)
-                        st.session_state["historial_comprobantes"].append(registro_nuevo)
-                        st.success("Comprobante guardado en la pestaña 'Registro Acumulado'.")
+                    if st.button("➕ Guardar Comprobante", type="primary", use_container_width=True):
+                        usuario_sesion = st.session_state.get("usuario_supabase")
+                        bytes_actuales = st.session_state.get("ultimo_archivo_bytes")
+
+                        # Si el usuario inició sesión en Supabase, sube imagen a Storage y guarda en tabla 'facturas'
+                        if usuario_sesion and cliente_supabase is not None:
+                            if not bytes_actuales:
+                                st.warning("Primero sube o captura una imagen de comprobante antes de guardar en la nube.")
+                            else:
+                                with st.spinner("Subiendo imagen a Supabase Storage y registrando factura..."):
+                                    exito, msg_supa, url_img = guardar_comprobante_en_supabase(
+                                        cliente=cliente_supabase,
+                                        user_id=usuario_sesion["id"],
+                                        user_email=usuario_sesion["email"],
+                                        bytes_imagen=bytes_actuales,
+                                        nombre_archivo=st.session_state.get("ultimo_archivo_nombre", "comprobante.png"),
+                                        mime_type=st.session_state.get("ultimo_archivo_mime", "image/png"),
+                                        datos_revisados=datos_revisados,
+                                        texto_ocr=st.session_state.get("texto_ocr", ""),
+                                    )
+                                if exito:
+                                    st.success(msg_supa)
+                                else:
+                                    st.error(msg_supa)
+                        else:
+                            # Modo Demo Local en memoria de sesión
+                            registro_local = {
+                                "fecha_carga": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "modo": "Demo Local",
+                            }
+                            registro_local.update(datos_revisados)
+                            st.session_state["historial_comprobantes"].append(registro_local)
+                            st.success(
+                                "Comprobante guardado en 'Registro Acumulado' (Modo Demo Local). "
+                                "Inicia sesión arriba para guardarlo permanentemente en Supabase."
+                            )
 
                 with col_btn2:
                     json_individual = json.dumps(datos_revisados, ensure_ascii=False, indent=2)
@@ -1305,45 +1617,113 @@ def main() -> None:
                     )
 
     # ==========================================================================
-    # PESTAÑA 2: REGISTRO ACUMULADO DE COMPROBANTES Y EXPORTACIÓN MASIVA
+    # PESTAÑA 2: REGISTRO ACUMULADO (SUPABASE POR USUARIO O MODO DEMO LOCAL)
     # ==========================================================================
     with tab_historial:
         with st.container(border=True):
-            st.subheader("🗂️ Comprobantes Registrados en la Sesión")
-            historial = st.session_state["historial_comprobantes"]
+            usuario_sesion = st.session_state.get("usuario_supabase")
 
-            if not historial:
-                st.info(
-                    "Aún no has guardado comprobantes en el lote. "
-                    "Procesa una factura en la pestaña 1 y presiona **'➕ Guardar en el Registro'**."
+            if usuario_sesion and cliente_supabase is not None:
+                st.subheader(f"☁️ Mis Comprobantes en la Nube ({usuario_sesion['email']})")
+                registros_nube, error_consulta = consultar_facturas_usuario_supabase(
+                    cliente_supabase, usuario_sesion["id"]
                 )
-            else:
-                df_hist = pd.DataFrame(historial)
-                st.dataframe(df_hist, use_container_width=True)
+                if error_consulta:
+                    st.error(error_consulta)
+                elif not registros_nube:
+                    st.info(
+                        "Aún no tienes comprobantes guardados en tu cuenta de Supabase. "
+                        "Procesa una factura en la pestaña 1 y presiona **'➕ Guardar Comprobante'**."
+                    )
+                else:
+                    columnas_mostrar = [
+                        "created_at",
+                        "tipo_documento",
+                        "emisor",
+                        "cuit",
+                        "fecha_emision",
+                        "numero_comprobante",
+                        "importe_neto",
+                        "impuestos_iva",
+                        "importe_total",
+                        "moneda",
+                        "imagen_url",
+                    ]
+                    df_nube = pd.DataFrame(registros_nube)
+                    cols_existentes = [c for c in columnas_mostrar if c in df_nube.columns]
+                    df_vista = df_nube[cols_existentes] if cols_existentes else df_nube
 
-                col_exp1, col_exp2, col_limpiar = st.columns(3)
-                with col_exp1:
-                    csv_lote = df_hist.to_csv(index=False).encode("utf-8-sig")
-                    st.download_button(
-                        "📥 Exportar Todos a CSV",
-                        data=csv_lote,
-                        file_name="registro_comprobantes.csv",
-                        mime="text/csv",
+                    st.dataframe(
+                        df_vista,
+                        column_config={
+                            "imagen_url": st.column_config.LinkColumn(
+                                "Foto del Comprobante", display_text="Ver imagen"
+                            )
+                        },
                         use_container_width=True,
+                        hide_index=True,
                     )
-                with col_exp2:
-                    json_lote = json.dumps(historial, ensure_ascii=False, indent=2).encode("utf-8")
-                    st.download_button(
-                        "📥 Exportar Todos a JSON",
-                        data=json_lote,
-                        file_name="registro_comprobantes.json",
-                        mime="application/json",
-                        use_container_width=True,
+
+                    col_exp1, col_exp2 = st.columns(2)
+                    with col_exp1:
+                        csv_nube = df_vista.to_csv(index=False).encode("utf-8-sig")
+                        st.download_button(
+                            "📥 Exportar Mis Facturas a CSV",
+                            data=csv_nube,
+                            file_name="mis_facturas_supabase.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+                    with col_exp2:
+                        json_nube = json.dumps(registros_nube, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+                        st.download_button(
+                            "📥 Exportar Mis Facturas a JSON",
+                            data=json_nube,
+                            file_name="mis_facturas_supabase.json",
+                            mime="application/json",
+                            use_container_width=True,
+                        )
+            else:
+                st.subheader("🗂️ Comprobantes Registrados en la Sesión (Modo Demo Local)")
+                if supabase_configurado:
+                    st.caption(
+                        "💡 Estás viendo los comprobantes temporales de la sesión local. "
+                        "Haz clic en **'👤 Iniciar sesión / Registro'** arriba a la derecha para ver y guardar tus propios comprobantes en Supabase."
                     )
-                with col_limpiar:
-                    if st.button("🗑️ Vaciar Registro", use_container_width=True):
-                        st.session_state["historial_comprobantes"] = []
-                        st.rerun()
+                historial = st.session_state["historial_comprobantes"]
+
+                if not historial:
+                    st.info(
+                        "Aún no has guardado comprobantes en el lote. "
+                        "Procesa una factura en la pestaña 1 y presiona **'➕ Guardar Comprobante'**."
+                    )
+                else:
+                    df_hist = pd.DataFrame(historial)
+                    st.dataframe(df_hist, use_container_width=True, hide_index=True)
+
+                    col_exp1, col_exp2, col_limpiar = st.columns(3)
+                    with col_exp1:
+                        csv_lote = df_hist.to_csv(index=False).encode("utf-8-sig")
+                        st.download_button(
+                            "📥 Exportar Todos a CSV",
+                            data=csv_lote,
+                            file_name="registro_comprobantes.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+                    with col_exp2:
+                        json_lote = json.dumps(historial, ensure_ascii=False, indent=2).encode("utf-8")
+                        st.download_button(
+                            "📥 Exportar Todos a JSON",
+                            data=json_lote,
+                            file_name="registro_comprobantes.json",
+                            mime="application/json",
+                            use_container_width=True,
+                        )
+                    with col_limpiar:
+                        if st.button("🗑️ Vaciar Registro Local", use_container_width=True):
+                            st.session_state["historial_comprobantes"] = []
+                            st.rerun()
 
     # ==========================================================================
     # PESTAÑA 3: EVALUACIÓN DE EXACTITUD CONTRA TRANSCRIPCIÓN DE REFERENCIA
