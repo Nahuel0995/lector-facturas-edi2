@@ -686,7 +686,7 @@ def evaluar_extraccion(datos_extraidos: Dict[str, str], datos_referencia: Dict[s
 
 
 # ==============================================================================
-# 6. REDISEÑO UI/UX: ESTILO EDITORIAL CÁLIDO Y MINIMALISTA
+# 6. REDISEÑO UI/UX: ESTÉTICA AI FINTECH SAAS (INSPIRADA EN CALIPSO CAPTIA Y MONICA.IM)
 # ==============================================================================
 
 def inicializar_estado_sesion() -> None:
@@ -708,386 +708,580 @@ def inicializar_estado_sesion() -> None:
         st.session_state["ultimo_archivo_mime"] = "image/png"
 
 
-def aplicar_estilos_editoriales() -> None:
+def aplicar_estilos_saas() -> None:
     """
-    Inyecta CSS personalizado con estética editorial cálida, minimalista y luminosa:
-    - Fondo general color arena suave (#F7F4EF)
-    - Contenedores/tarjetas en blanco cálido (#FFFFFF) con bordes sutiles (#E2DDD5)
-    - Textos en gris carbón (#2C2A29)
-    - Acento en azul cielo pastel (#87B1DC) con texto oscuro
+    Inyecta CSS personalizado con estética AI FinTech SaaS moderna, limpia y luminosa
+    inspirada en Calipso Captia (bandeja de indexación B2B) y Monica.im Invoice Scanner
+    (dropzone interactivo, degradados índigo-azul, píldoras de estado y tarjetas limpias).
     """
     st.markdown(
         """
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
 
         :root {
-            --bg-main: #F7F4EF;
-            --bg-sidebar: #EFECE6;
+            --bg-app: #F8FAFC;
+            --bg-sidebar: #FFFFFF;
             --bg-card: #FFFFFF;
-            --bg-card-warm: #FAF8F5;
-            --border-subtle: #E2DDD5;
-            --accent-blue: #87B1DC;
-            --accent-blue-hover: #729ECA;
-            --accent-blue-soft: rgba(135, 177, 220, 0.18);
-            --text-primary: #2C2A29;
-            --text-secondary: #6E6A64;
+            --bg-subtle: #F1F5F9;
+            --border-card: #E2E8F0;
+            --border-indigo: #C7D2FE;
+            --brand-primary: #4F46E5;
+            --brand-secondary: #2563EB;
+            --brand-violet: #7C3AED;
+            --brand-soft: #EEF2FF;
+            --text-main: #0F172A;
+            --text-muted: #475569;
+            --text-light: #64748B;
+            --success-bg: #ECFDF5;
+            --success-text: #059669;
+            --warning-bg: #FFFBEB;
+            --warning-text: #D97706;
 
-            /* Variables de Streamlit y Glide Data Grid (st.data_editor / st.dataframe) */
-            --primary-color: #87B1DC;
-            --background-color: #F7F4EF;
+            /* Variables nativas de Streamlit y Glide Data Grid (st.data_editor / st.dataframe) */
+            --primary-color: #4F46E5;
+            --background-color: #F8FAFC;
             --secondary-background-color: #FFFFFF;
-            --text-color: #2C2A29;
+            --text-color: #0F172A;
             --gdg-bg-cell: #FFFFFF;
-            --gdg-bg-cell-medium: #FAF8F5;
-            --gdg-bg-header: #EFECE6;
-            --gdg-bg-header-has-focus: #E4DFD7;
-            --gdg-bg-header-hovered: #E4DFD7;
-            --gdg-bg-bubble: #EFECE6;
-            --gdg-bg-bubble-selected: #87B1DC;
-            --gdg-bg-search-result: rgba(135, 177, 220, 0.25);
-            --gdg-border-color: #E2DDD5;
-            --gdg-horizontal-border-color: #E2DDD5;
-            --gdg-drilldown-border: #87B1DC;
-            --gdg-text-dark: #2C2A29;
-            --gdg-text-medium: #6E6A64;
-            --gdg-text-light: #8A847C;
-            --gdg-text-bubble: #2C2A29;
-            --gdg-text-header: #2C2A29;
-            --gdg-text-header-selected: #2C2A29;
-            --gdg-accent-color: #87B1DC;
-            --gdg-accent-fg: #2C2A29;
-            --gdg-accent-light: rgba(135, 177, 220, 0.22);
+            --gdg-bg-cell-medium: #F8FAFC;
+            --gdg-bg-header: #F1F5F9;
+            --gdg-bg-header-has-focus: #E2E8F0;
+            --gdg-bg-header-hovered: #E2E8F0;
+            --gdg-bg-bubble: #EEF2FF;
+            --gdg-bg-bubble-selected: #4F46E5;
+            --gdg-bg-search-result: rgba(79, 70, 229, 0.14);
+            --gdg-border-color: #E2E8F0;
+            --gdg-horizontal-border-color: #E2E8F0;
+            --gdg-drilldown-border: #4F46E5;
+            --gdg-text-dark: #0F172A;
+            --gdg-text-medium: #475569;
+            --gdg-text-light: #64748B;
+            --gdg-text-bubble: #4F46E5;
+            --gdg-text-header: #0F172A;
+            --gdg-text-header-selected: #4F46E5;
+            --gdg-accent-color: #4F46E5;
+            --gdg-accent-fg: #FFFFFF;
+            --gdg-accent-light: rgba(79, 70, 229, 0.12);
             color-scheme: light !important;
         }
 
+        /* Fondo general luminoso con aura suave estilo Monica.im */
         html, body, [class*="css"], .stApp, [data-testid="stAppViewContainer"] {
-            font-family: 'Plus Jakarta Sans', 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
-            background-color: var(--bg-main) !important;
-            color: var(--text-primary) !important;
+            font-family: 'Inter', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+            background-color: var(--bg-app) !important;
+            background-image:
+                radial-gradient(ellipse 80% 42% at 50% -8%, rgba(99, 102, 241, 0.13) 0%, rgba(56, 189, 248, 0.08) 45%, transparent 75%) !important;
+            background-attachment: fixed !important;
+            color: var(--text-main) !important;
         }
 
         [data-testid="stHeader"] {
-            background-color: rgba(247, 244, 239, 0.88) !important;
-            backdrop-filter: blur(8px);
-            border-bottom: 1px solid var(--border-subtle);
+            background-color: rgba(248, 250, 252, 0.82) !important;
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(226, 232, 240, 0.7);
         }
 
         .block-container {
-            padding-top: 1.5rem !important;
+            padding-top: 1.35rem !important;
             padding-bottom: 3.5rem !important;
-            max-width: 1280px !important;
+            max-width: 1300px !important;
         }
 
         h1, h2, h3, h4, h5, h6 {
             font-family: 'Plus Jakarta Sans', sans-serif !important;
-            color: var(--text-primary) !important;
-            letter-spacing: -0.02em;
+            color: var(--text-main) !important;
+            letter-spacing: -0.025em;
             font-weight: 700 !important;
         }
 
         p, li, span, label, [data-testid="stMarkdownContainer"] p {
-            color: var(--text-primary);
+            color: var(--text-main);
         }
 
         [data-testid="stCaptionContainer"], small {
-            color: var(--text-secondary) !important;
+            color: var(--text-light) !important;
         }
 
         [data-testid="stWidgetLabel"] p {
-            color: var(--text-primary) !important;
+            color: var(--text-main) !important;
             font-weight: 600 !important;
-            font-size: 0.92rem !important;
+            font-size: 0.9rem !important;
         }
 
-        /* Barra superior limpia de créditos */
-        .editorial-topbar-credits {
-            background-color: #FFFFFF;
-            border: 1px solid var(--border-subtle);
-            border-radius: 6px;
-            padding: 0.65rem 1.15rem;
-            font-size: 0.86rem;
-            font-weight: 600;
-            color: var(--text-secondary);
+        /* Barra de navegación superior SaaS */
+        .saas-navbar {
+            background: rgba(255, 255, 255, 0.92);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-card);
+            border-radius: 14px;
+            padding: 0.65rem 1.25rem;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            box-shadow: 0 2px 10px rgba(44, 42, 41, 0.03);
+            gap: 1rem;
+            flex-wrap: wrap;
+            box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
         }
 
-        .editorial-topbar-credits strong {
-            color: var(--text-primary);
-        }
-
-        /* Hero Banner Editorial Minimalista */
-        .bloom-hero {
-            position: relative;
-            width: 100%;
-            min-height: 240px;
-            border-radius: 8px;
-            overflow: hidden;
-            margin: 0.6rem 0 1.6rem 0;
-            background-image:
-                linear-gradient(180deg, rgba(34, 31, 28, 0.70) 0%, rgba(34, 31, 28, 0.56) 50%, rgba(34, 31, 28, 0.74) 100%),
-                url('https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1600&q=80');
-            background-size: cover;
-            background-position: center;
-            box-shadow: 0 10px 28px rgba(44, 42, 41, 0.07);
-            border: 1px solid #DCD6CC;
+        .saas-brand {
             display: flex;
-            flex-direction: column;
-            justify-content: center;
             align-items: center;
-            text-align: center;
-            padding: 2.2rem 2rem;
+            gap: 0.7rem;
         }
 
-        .bloom-hero-eyebrow {
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 0.76rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.22em;
-            color: #EFECE6 !important;
-            margin-bottom: 0.7rem;
-            background: rgba(255, 255, 255, 0.12);
-            padding: 0.3rem 0.85rem;
-            border-radius: 999px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-
-        .bloom-hero-title {
-            font-family: 'Plus Jakarta Sans', sans-serif !important;
-            font-size: clamp(1.85rem, 3.2vw, 2.75rem) !important;
-            font-weight: 700 !important;
+        .saas-logo-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            background: linear-gradient(135deg, #4F46E5 0%, #2563EB 100%);
             color: #FFFFFF !important;
-            line-height: 1.2 !important;
-            margin: 0 0 0.8rem 0 !important;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1rem;
+            box-shadow: 0 4px 10px rgba(79, 70, 229, 0.28);
+        }
+
+        .saas-brand-title {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 800;
+            font-size: 1.02rem;
+            color: var(--text-main) !important;
             letter-spacing: -0.02em;
         }
 
-        .bloom-underline {
-            display: inline-block;
-            padding-bottom: 3px;
-            border-bottom: 4px solid #87B1DC;
+        .saas-credits {
+            font-size: 0.82rem;
+            color: var(--text-muted) !important;
+            font-weight: 500;
         }
 
-        .bloom-hero-subtitle {
-            font-family: 'DM Sans', sans-serif;
-            font-size: 1rem;
-            color: rgba(247, 244, 239, 0.92) !important;
-            max-width: 680px;
-            margin: 0 auto;
+        .saas-status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.78rem;
+            font-weight: 600;
+            padding: 0.3rem 0.75rem;
+            border-radius: 999px;
+            background: #EEF2FF;
+            color: #4338CA !important;
+            border: 1px solid #C7D2FE;
+        }
+
+        /* Hero SaaS limpio estilo Monica.im + Calipso Captia */
+        .saas-hero {
+            text-align: center;
+            padding: 2.1rem 1.5rem 1.5rem 1.5rem;
+            max-width: 920px;
+            margin: 0 auto 0.6rem auto;
+        }
+
+        .saas-hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            padding: 0.38rem 0.95rem;
+            border-radius: 999px;
+            background: linear-gradient(90deg, rgba(79, 70, 229, 0.10) 0%, rgba(37, 99, 235, 0.10) 100%);
+            border: 1px solid rgba(99, 102, 241, 0.28);
+            color: #4338CA !important;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.76rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 1rem;
+        }
+
+        .saas-hero-title {
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+            font-size: clamp(2rem, 3.6vw, 3rem) !important;
+            font-weight: 800 !important;
+            color: #0F172A !important;
+            line-height: 1.15 !important;
+            margin: 0 0 0.85rem 0 !important;
+            letter-spacing: -0.03em !important;
+        }
+
+        .saas-gradient-text {
+            background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 50%, #0284C7 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .saas-hero-subtitle {
+            font-size: 1.04rem;
+            color: #475569 !important;
+            max-width: 700px;
+            margin: 0 auto 1.45rem auto;
+            line-height: 1.6;
             font-weight: 400;
-            line-height: 1.55;
         }
 
-        /* Sidebar cálida */
+        /* Tira de 3 pasos estilo Monica.im / Calipso Captia */
+        .saas-steps-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.9rem;
+            max-width: 900px;
+            margin: 0 auto 1.2rem auto;
+        }
+
+        @media (max-width: 768px) {
+            .saas-steps-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .saas-step-card {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 12px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-align: left;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.025);
+        }
+
+        .saas-step-num {
+            min-width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            background: #EEF2FF;
+            color: #4F46E5 !important;
+            font-weight: 800;
+            font-size: 0.82rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #C7D2FE;
+        }
+
+        .saas-step-text strong {
+            display: block;
+            font-size: 0.85rem;
+            color: #0F172A !important;
+            font-weight: 700;
+        }
+
+        .saas-step-text span {
+            font-size: 0.76rem;
+            color: #64748B !important;
+        }
+
+        /* Encabezados de sección en tarjetas estilo Calipso Captia */
+        .captia-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.85rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid #F1F5F9;
+            flex-wrap: wrap;
+        }
+
+        .captia-card-title {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 1.12rem;
+            font-weight: 700;
+            color: #0F172A !important;
+            margin: 0;
+        }
+
+        .captia-chip {
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 0.26rem 0.7rem;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .captia-chip-indigo {
+            background: #EEF2FF;
+            color: #4F46E5 !important;
+            border: 1px solid #C7D2FE;
+        }
+
+        .captia-chip-success {
+            background: #ECFDF5;
+            color: #059669 !important;
+            border: 1px solid #A7F3D0;
+        }
+
+        .captia-chip-warning {
+            background: #FFFBEB;
+            color: #D97706 !important;
+            border: 1px solid #FDE68A;
+        }
+
+        /* Mini tarjetas KPI de resumen rápido en bandeja de validación */
+        .captia-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.65rem;
+            margin-bottom: 1rem;
+        }
+
+        @media (max-width: 768px) {
+            .captia-kpi-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        .captia-kpi-box {
+            background: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            border-radius: 10px;
+            padding: 0.6rem 0.75rem;
+        }
+
+        .captia-kpi-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #64748B !important;
+            font-weight: 700;
+            margin-bottom: 0.2rem;
+        }
+
+        .captia-kpi-val {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: #0F172A !important;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Sidebar limpia estilo panel SaaS */
         [data-testid="stSidebar"] {
             background-color: var(--bg-sidebar) !important;
-            border-right: 1px solid var(--border-subtle) !important;
+            border-right: 1px solid var(--border-card) !important;
         }
 
         [data-testid="stSidebar"] * {
-            color: var(--text-primary);
+            color: var(--text-main);
         }
 
-        /* Contenedores y tarjetas en blanco cálido (#FFFFFF) con bordes sutiles (#E2DDD5) */
+        /* Tarjetas principales (st.container(border=True)) */
         [data-testid="stVerticalBlockBorderWrapper"] {
             background-color: var(--bg-card) !important;
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 6px !important;
-            padding: 1.45rem 1.55rem !important;
-            box-shadow: 0 6px 20px rgba(44, 42, 41, 0.04) !important;
+            border: 1px solid var(--border-card) !important;
+            border-radius: 16px !important;
+            padding: 1.5rem 1.6rem !important;
+            box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.03), 0 12px 28px -6px rgba(15, 23, 42, 0.05) !important;
         }
 
-        /* Pestañas (st.tabs) con indicador azul cielo pastel (#87B1DC) */
+        /* Pestañas (st.tabs) estilo Segmented Control moderno */
         [data-testid="stTabs"] [data-baseweb="tab-list"] {
             justify-content: center !important;
-            gap: 2.2rem !important;
-            background-color: transparent !important;
-            border-bottom: 1px solid var(--border-subtle) !important;
-            padding-bottom: 0 !important;
-            margin-bottom: 1.4rem !important;
+            gap: 0.5rem !important;
+            background-color: #EEF2F6 !important;
+            padding: 0.38rem !important;
+            border-radius: 12px !important;
+            border: 1px solid #E2E8F0 !important;
+            max-width: 860px;
+            margin: 0 auto 1.6rem auto !important;
         }
 
         [data-testid="stTabs"] [data-baseweb="tab"] {
             font-family: 'Plus Jakarta Sans', sans-serif !important;
-            font-size: 0.96rem !important;
-            font-weight: 500 !important;
-            color: var(--text-secondary) !important;
+            font-size: 0.9rem !important;
+            font-weight: 600 !important;
+            color: var(--text-muted) !important;
             background-color: transparent !important;
+            border-radius: 9px !important;
             border: none !important;
-            padding: 0.85rem 0.5rem !important;
-            transition: color 0.2s ease;
+            padding: 0.58rem 1.1rem !important;
+            transition: all 0.2s ease !important;
         }
 
         [data-testid="stTabs"] [data-baseweb="tab"]:hover {
-            color: var(--text-primary) !important;
+            color: var(--brand-primary) !important;
         }
 
         [data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"] {
-            color: var(--text-primary) !important;
+            background-color: #FFFFFF !important;
+            color: var(--brand-primary) !important;
             font-weight: 700 !important;
-            border-bottom: 3px solid var(--accent-blue) !important;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08) !important;
         }
 
-        [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
-            background-color: var(--accent-blue) !important;
-            height: 3px !important;
+        [data-testid="stTabs"] [data-baseweb="tab-highlight"],
+        [data-testid="stTabs"] [data-baseweb="tab-border"] {
+            display: none !important;
         }
 
-        /* Botones principales y secundarios con azul cielo pastel (#87B1DC) y texto oscuro (#2C2A29) */
+        /* Botones principales con degradado Índigo-Azul estilo Monica.im / Captia */
         .stButton > button[kind="primary"],
         [data-testid="stBaseButton-primary"],
         .stFormSubmitButton > button {
-            background-color: var(--accent-blue) !important;
-            color: var(--text-primary) !important;
-            border: 1px solid #75A0CB !important;
-            border-radius: 4px !important;
+            background: linear-gradient(135deg, #4F46E5 0%, #6366F1 50%, #2563EB 100%) !important;
+            color: #FFFFFF !important;
+            border: none !important;
+            border-radius: 10px !important;
             font-weight: 600 !important;
-            padding: 0.58rem 1.15rem !important;
-            box-shadow: 0 2px 6px rgba(135, 177, 220, 0.25) !important;
-            transition: all 0.2s ease !important;
+            padding: 0.62rem 1.2rem !important;
+            box-shadow: 0 6px 18px -4px rgba(79, 70, 229, 0.42) !important;
+            transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease !important;
+        }
+
+        .stButton > button[kind="primary"] *,
+        [data-testid="stBaseButton-primary"] *,
+        .stFormSubmitButton > button * {
+            color: #FFFFFF !important;
         }
 
         .stButton > button[kind="primary"]:hover,
         [data-testid="stBaseButton-primary"]:hover,
         .stFormSubmitButton > button:hover {
-            background-color: var(--accent-blue-hover) !important;
-            color: var(--text-primary) !important;
-            border-color: #628EB9 !important;
+            box-shadow: 0 10px 24px -4px rgba(79, 70, 229, 0.55) !important;
+            opacity: 0.96 !important;
         }
 
+        /* Botones secundarios y de exportación */
         .stButton > button[kind="secondary"],
         [data-testid="stBaseButton-secondary"],
         .stDownloadButton > button {
-            background-color: var(--bg-card-warm) !important;
-            color: var(--text-primary) !important;
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 4px !important;
+            background-color: #FFFFFF !important;
+            color: var(--text-main) !important;
+            border: 1px solid #CBD5E1 !important;
+            border-radius: 10px !important;
             font-weight: 600 !important;
-            padding: 0.55rem 1rem !important;
+            padding: 0.58rem 1rem !important;
             transition: all 0.2s ease !important;
+        }
+
+        .stButton > button[kind="secondary"] *,
+        [data-testid="stBaseButton-secondary"] *,
+        .stDownloadButton > button * {
+            color: var(--text-main) !important;
         }
 
         .stButton > button[kind="secondary"]:hover,
         [data-testid="stBaseButton-secondary"]:hover,
         .stDownloadButton > button:hover {
-            background-color: var(--accent-blue-soft) !important;
-            border-color: var(--accent-blue) !important;
-            color: var(--text-primary) !important;
+            background-color: var(--brand-soft) !important;
+            border-color: var(--brand-primary) !important;
+            color: var(--brand-primary) !important;
         }
 
-        .stButton > button *, .stDownloadButton > button *, .stFormSubmitButton > button * {
-            color: var(--text-primary) !important;
-        }
-
-        /* Toggle, Radio buttons y Checkboxes en azul cielo pastel (#87B1DC) */
+        /* Toggles, Radio buttons y Checkboxes */
         input[type="radio"], input[type="checkbox"] {
-            accent-color: var(--accent-blue) !important;
-        }
-
-        [data-baseweb="checkbox"] > div:first-child {
-            border-color: #87B1DC !important;
+            accent-color: var(--brand-primary) !important;
         }
 
         /* Inputs, Textareas y Selectboxes */
         [data-baseweb="input"] > div,
         [data-baseweb="textarea"] > div,
         [data-baseweb="select"] > div {
-            background-color: #FFFFFF !important;
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 4px !important;
-            color: var(--text-primary) !important;
+            background-color: #F8FAFC !important;
+            border: 1px solid #CBD5E1 !important;
+            border-radius: 10px !important;
+            color: var(--text-main) !important;
         }
 
         [data-baseweb="input"] input,
         [data-baseweb="textarea"] textarea,
         [data-baseweb="select"] * {
-            color: var(--text-primary) !important;
+            color: var(--text-main) !important;
             background-color: transparent !important;
         }
 
         [data-baseweb="input"] > div:focus-within,
         [data-baseweb="textarea"] > div:focus-within,
         [data-baseweb="select"] > div:focus-within {
-            border-color: var(--accent-blue) !important;
-            box-shadow: 0 0 0 2px var(--accent-blue-soft) !important;
+            background-color: #FFFFFF !important;
+            border-color: var(--brand-primary) !important;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14) !important;
         }
 
-        /* Popovers y listas desplegables */
         [data-baseweb="popover"], [data-baseweb="menu"], ul[role="listbox"] {
             background-color: #FFFFFF !important;
-            color: var(--text-primary) !important;
-            border: 1px solid var(--border-subtle) !important;
+            color: var(--text-main) !important;
+            border: 1px solid var(--border-card) !important;
+            border-radius: 10px !important;
         }
 
         li[role="option"] {
-            color: var(--text-primary) !important;
+            color: var(--text-main) !important;
             background-color: #FFFFFF !important;
         }
 
         li[role="option"]:hover, li[role="option"][aria-selected="true"] {
-            background-color: var(--accent-blue-soft) !important;
+            background-color: var(--brand-soft) !important;
+            color: var(--brand-primary) !important;
         }
 
-        /* File Uploader y Expander */
+        /* Dropzone de carga de facturas estilo Monica.im Invoice Scanner */
         [data-testid="stFileUploader"] section,
         [data-testid="stFileUploaderDropzone"] {
-            background-color: var(--bg-card-warm) !important;
-            border: 1.5px dashed #C9C2B8 !important;
-            border-radius: 4px !important;
-            padding: 1.25rem !important;
-            color: var(--text-primary) !important;
+            background: linear-gradient(180deg, #F8FAFF 0%, #F1F5FE 100%) !important;
+            border: 2px dashed #A5B4FC !important;
+            border-radius: 14px !important;
+            padding: 1.65rem 1.25rem !important;
+            color: var(--text-main) !important;
+            transition: all 0.22s ease !important;
         }
 
         [data-testid="stFileUploader"] section:hover,
         [data-testid="stFileUploaderDropzone"]:hover {
-            border-color: var(--accent-blue) !important;
-            background-color: #F3F6FA !important;
+            border-color: var(--brand-primary) !important;
+            background: #EEF2FF !important;
+            box-shadow: 0 8px 22px -6px rgba(79, 70, 229, 0.18) !important;
         }
 
         [data-testid="stFileUploaderDropzone"] button {
             background-color: #FFFFFF !important;
-            color: var(--text-primary) !important;
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 4px !important;
+            color: var(--brand-primary) !important;
+            border: 1px solid #C7D2FE !important;
+            border-radius: 8px !important;
             font-weight: 600 !important;
         }
 
+        /* Expanders y Tablas */
         [data-testid="stExpander"], details {
-            background-color: var(--bg-card-warm) !important;
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 4px !important;
+            background-color: #F8FAFC !important;
+            border: 1px solid var(--border-card) !important;
+            border-radius: 10px !important;
             overflow: hidden;
             margin-bottom: 0.9rem !important;
         }
 
         [data-testid="stExpander"] summary, details > summary {
-            background-color: var(--bg-card-warm) !important;
-            color: var(--text-primary) !important;
+            background-color: #F8FAFC !important;
+            color: var(--text-main) !important;
             font-weight: 600 !important;
             padding: 0.7rem 1rem !important;
         }
 
         [data-testid="stExpanderDetails"] {
             background-color: #FFFFFF !important;
-            border-top: 1px solid var(--border-subtle) !important;
+            border-top: 1px solid var(--border-card) !important;
             padding: 1rem !important;
         }
 
         [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 4px !important;
+            border: 1px solid var(--border-card) !important;
+            border-radius: 10px !important;
             background-color: #FFFFFF !important;
             overflow: hidden;
         }
 
         [data-testid="stMetric"] {
-            background-color: var(--bg-card-warm) !important;
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 4px !important;
+            background-color: #F8FAFC !important;
+            border: 1px solid var(--border-card) !important;
+            border-radius: 12px !important;
             padding: 1.1rem 1.25rem !important;
         }
         </style>
@@ -1099,26 +1293,31 @@ def aplicar_estilos_editoriales() -> None:
 def renderizar_encabezado_y_auth(cliente_supabase: Optional[Client], supabase_configurado: bool) -> None:
     """
     Renderiza:
-    1. La barra superior limpia con los créditos del proyecto a la izquierda y el botón
-       'Iniciar sesión / Cerrar sesión' a la derecha.
-    2. El panel desplegable de Login / Registro con Supabase (o estado de Modo Demo Local).
-    3. El Hero Banner minimalista con subrayado decorativo en azul pastel (#87B1DC).
+    1. Navbar superior estilo SaaS (Calipso Captia) con marca, créditos y botón Iniciar/Cerrar sesión.
+    2. Modal/panel desplegable de autenticación con Supabase Auth.
+    3. Hero limpio con texto degradado y tira de 3 pasos al estilo Monica.im Invoice Scanner.
     """
     usuario = st.session_state.get("usuario_supabase")
 
-    col_creditos, col_boton_auth = st.columns([3.8, 1.2], gap="small")
+    col_nav, col_boton_auth = st.columns([4.0, 1.15], gap="small")
 
-    with col_creditos:
+    with col_nav:
         estado_badge = (
-            f"🟢 Sesión activa: {usuario['email']}"
+            f"🟢 {usuario['email']}"
             if usuario
-            else ("☁️ Supabase listo" if supabase_configurado else "🧪 Modo Demo Local activo")
+            else ("☁️ Nube Lista" if supabase_configurado else "⚡ Modo Demo Local")
         )
         st.markdown(
             f"""
-            <div class="editorial-topbar-credits">
-                <span><strong>Trabajo Final Integrador — EDI II (Ciencias de Datos)</strong> &nbsp;|&nbsp; Integrantes: Alan Bustamante y Christian Martínez</span>
-                <span>{estado_badge}</span>
+            <div class="saas-navbar">
+                <div class="saas-brand">
+                    <span class="saas-logo-icon">🧾</span>
+                    <div>
+                        <div class="saas-brand-title">CaptiaOCR &bull; Escáner IA</div>
+                        <div class="saas-credits">TFI EDI II (Ciencias de Datos) — Alan Bustamante y Christian Martínez</div>
+                    </div>
+                </div>
+                <span class="saas-status-pill">{estado_badge}</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1136,29 +1335,28 @@ def renderizar_encabezado_y_auth(cliente_supabase: Optional[Client], supabase_co
                 st.session_state["mostrar_panel_auth"] = False
                 st.rerun()
         else:
-            etiqueta_btn = "✕ Cerrar acceso" if st.session_state["mostrar_panel_auth"] else "👤 Iniciar sesión / Registro"
+            etiqueta_btn = "✕ Cerrar acceso" if st.session_state["mostrar_panel_auth"] else "👤 Iniciar sesión"
             if st.button(etiqueta_btn, key="btn_login_top", type="primary", use_container_width=True):
                 st.session_state["mostrar_panel_auth"] = not st.session_state["mostrar_panel_auth"]
                 st.rerun()
 
-    # Panel de autenticación (Iniciar Sesión / Registrarse) cuando el usuario lo despliega
     if st.session_state["mostrar_panel_auth"] and not usuario:
         with st.container(border=True):
-            st.subheader("🔐 Acceso de Usuarios (Supabase Auth)")
+            st.subheader("🔐 Acceso a tu Repositorio en la Nube (Supabase Auth)")
             if not supabase_configurado or cliente_supabase is None:
                 st.info(
-                    "🧪 **Modo Demo Local activo:** Aún no se configuraron `SUPABASE_URL` y `SUPABASE_KEY` en "
-                    "`st.secrets` (o variables de entorno). Puedes usar todas las funciones de diseño, filtro escáner OpenCV, "
-                    "OCR y extracción con Groq normalmente en memoria local."
+                    "⚡ **Modo Demo Local activo:** Aún no se configuraron `SUPABASE_URL` y `SUPABASE_KEY` en "
+                    "`st.secrets` (o variables de entorno). Puedes probar todo el escáner OpenCV, Tesseract OCR y "
+                    "extracción con IA normalmente en memoria local."
                 )
             else:
                 tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Crear Cuenta Nueva"])
 
                 with tab_login:
                     with st.form("form_login_supabase", clear_on_submit=False):
-                        email_in = st.text_input("Correo electrónico:", placeholder="usuario@ejemplo.com")
+                        email_in = st.text_input("Correo electrónico:", placeholder="usuario@empresa.com")
                         pass_in = st.text_input("Contraseña:", type="password", placeholder="••••••••")
-                        submit_login = st.form_submit_button("Ingresar a mi cuenta", use_container_width=True)
+                        submit_login = st.form_submit_button("Ingresar a mi bandeja", use_container_width=True)
 
                         if submit_login:
                             if not email_in.strip() or not pass_in:
@@ -1185,7 +1383,7 @@ def renderizar_encabezado_y_auth(cliente_supabase: Optional[Client], supabase_co
                         pass_reg = st.text_input(
                             "Contraseña (mínimo 6 caracteres):", type="password", placeholder="••••••••"
                         )
-                        submit_reg = st.form_submit_button("Registrarme en la plataforma", use_container_width=True)
+                        submit_reg = st.form_submit_button("Crear cuenta gratuita", use_container_width=True)
 
                         if submit_reg:
                             if not email_reg.strip() or len(pass_reg) < 6:
@@ -1212,18 +1410,40 @@ def renderizar_encabezado_y_auth(cliente_supabase: Optional[Client], supabase_co
                                 except Exception as exc_reg:
                                     st.error(f"Error al registrar usuario: {exc_reg}")
 
-    # Hero Banner Principal
     st.markdown(
         """
-        <div class="bloom-hero">
-            <div class="bloom-hero-eyebrow">EDI II &bull; CIENCIAS DE DATOS</div>
-            <h1 class="bloom-hero-title">
-                Lector Inteligente de Comprobantes y <span class="bloom-underline">Facturas</span>
+        <div class="saas-hero">
+            <div class="saas-hero-badge">✨ ESCÁNER INTELIGENTE DE FACTURAS CON IA + OCR</div>
+            <h1 class="saas-hero-title">
+                Automatizá la captura de tus <span class="saas-gradient-text">Comprobantes y Facturas</span>
             </h1>
-            <p class="bloom-hero-subtitle">
-                Preprocesamiento con filtro escáner OpenCV, lectura OCR con Tesseract,
-                extracción contable estructurada con Groq / IA y resguardo en la nube con Supabase.
+            <p class="saas-hero-subtitle">
+                Eliminá la carga manual: digitalizá tickets y facturas con filtro escáner OpenCV,
+                interpretación inteligente por IA y circuito de validación antes de exportar a CSV, JSON o la nube.
             </p>
+            <div class="saas-steps-row">
+                <div class="saas-step-card">
+                    <span class="saas-step-num">1</span>
+                    <div class="saas-step-text">
+                        <strong>Subí o fotografiá el ticket</strong>
+                        <span>Mejora automática de nitidez y sombras</span>
+                    </div>
+                </div>
+                <div class="saas-step-card">
+                    <span class="saas-step-num">2</span>
+                    <div class="saas-step-text">
+                        <strong>Lectura híbrida OCR + IA</strong>
+                        <span>Extrae CUIT, fechas, IVA y totales al instante</span>
+                    </div>
+                </div>
+                <div class="saas-step-card">
+                    <span class="saas-step-num">3</span>
+                    <div class="saas-step-text">
+                        <strong>Validá y exportá</strong>
+                        <span>Revisión asistida, CSV/JSON y repositorio cloud</span>
+                    </div>
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1241,7 +1461,7 @@ def main() -> None:
         layout="wide",
     )
     inicializar_estado_sesion()
-    aplicar_estilos_editoriales()
+    aplicar_estilos_saas()
 
     supabase_url, supabase_key = obtener_credenciales_supabase()
     cliente_supabase = inicializar_cliente_supabase(supabase_url, supabase_key)
@@ -1253,12 +1473,12 @@ def main() -> None:
     # BARRA LATERAL: CONFIGURACIÓN HÍBRIDA Y DIAGNÓSTICO AUTOMÁTICO
     # --------------------------------------------------------------------------
     with st.sidebar:
-        st.header("⚙️ Configuración del Motor")
+        st.header("⚙️ Motor de Captura IA")
 
         # 1. Diagnóstico de Tesseract OCR
         ruta_tesseract = configurar_ruta_tesseract()
         if ruta_tesseract:
-            st.success(f"Tesseract OCR listo ({ruta_tesseract})")
+            st.success(f"Tesseract OCR activo ({ruta_tesseract})")
         else:
             st.error("No se encontró Tesseract OCR en el sistema.")
             ruta_manual = st.text_input(
@@ -1270,23 +1490,23 @@ def main() -> None:
                 st.success("Ruta manual de Tesseract configurada.")
 
         # 2. Estado de Supabase / Modo Demo Local
-        st.subheader("Base de Datos y Storage")
+        st.subheader("Repositorio en la Nube")
         usuario_actual = st.session_state.get("usuario_supabase")
         if usuario_actual and supabase_configurado:
-            st.success(f"☁️ Conectado como: {usuario_actual['email']}")
+            st.success(f"☁️ Conectado: {usuario_actual['email']}")
         elif supabase_configurado:
-            st.info("☁️ Supabase disponible. Inicia sesión arriba a la derecha para guardar tus fotos en la nube.")
+            st.info("☁️ Supabase listo. Iniciá sesión arriba a la derecha para sincronizar tus facturas.")
         else:
-            st.caption("🧪 **Modo Demo Local activo** (Configura `SUPABASE_URL` y `SUPABASE_KEY` para persistencia en la nube).")
+            st.caption("⚡ **Modo Demo Local activo** (Configurá `SUPABASE_URL` y `SUPABASE_KEY` para guardado cloud).")
 
-        st.subheader("Mejoras de Calidad (TFI Obj. 6)")
+        st.subheader("Calidad y Validación")
         aplicar_hibrido_regex = st.checkbox(
-            "Refuerzo con Expresiones Regulares (CUIT/Fechas)",
+            "Refuerzo fiscal con Regex (CUIT / Fechas)",
             value=True,
             help="Valida y rescata patrones exactos de CUIT, fecha y número de factura si el modelo los omite.",
         )
 
-        st.subheader("Modo de Inteligencia Artificial")
+        st.subheader("Motor de Inteligencia Artificial")
         clave_entorno = (
             os.environ.get("GROQ_API_KEY", "")
             or os.environ.get("GEMINI_API_KEY", "")
@@ -1303,7 +1523,7 @@ def main() -> None:
                 clave_entorno = ""
 
         modo_ia = st.radio(
-            "Selecciona dónde ejecutar el modelo:",
+            "Modo de procesamiento:",
             options=[
                 "1. Local (Ollama en esta PC)",
                 "2. Nube (Escalable para Celulares 24/7)",
@@ -1339,8 +1559,8 @@ def main() -> None:
 
         elif modo_ia.startswith("2."):
             st.info(
-                "Acepta claves gratuitas de **Groq** (`gsk_...`), **Google AI Studio / Gemini** (`AIza...`) "
-                "u **OpenRouter** (`sk-or-...`). Detecta automáticamente el proveedor y tus modelos activos."
+                "Acepta claves gratuitas de **Groq** (`gsk_...`), **Google Gemini** (`AIza...`) "
+                "u **OpenRouter** (`sk-or-...`). Detecta proveedor y modelos automáticamente."
             )
             api_key_nube = st.text_input(
                 "API Key (Groq o Google Gemini):",
@@ -1357,9 +1577,9 @@ def main() -> None:
             }.get(proveedor_detectado, "Nube")
 
             if modelos_nube:
-                st.success(f"✅ Conectado a {nombre_prov} ({len(modelos_nube)} modelos disponibles)")
+                st.success(f"✅ {nombre_prov} activo ({len(modelos_nube)} modelos)")
                 modelo_seleccionado = st.selectbox(
-                    f"Modelo activo en {nombre_prov}:",
+                    f"Modelo en {nombre_prov}:",
                     options=modelos_nube,
                 )
             else:
@@ -1383,28 +1603,36 @@ def main() -> None:
                 )
 
     # --------------------------------------------------------------------------
-    # PESTAÑAS PRINCIPALES DE LA APLICACIÓN
+    # PESTAÑAS PRINCIPALES ESTILO SEGMENTED CONTROL SAAS
     # --------------------------------------------------------------------------
     tab_lector, tab_historial, tab_evaluacion = st.tabs(
         [
-            "📄 1. Cargar y Extraer Comprobante",
-            "🗂️ 2. Registro Acumulado y Exportación",
-            "📊 3. Evaluación de Exactitud (TFI)",
+            "⚡ Escáner e Indexación IA",
+            "🗂️ Repositorio de Comprobantes",
+            "📊 Auditoría de Exactitud (TFI)",
         ]
     )
 
     # ==========================================================================
-    # PESTAÑA 1: CARGA, OPTIMIZACIÓN OPENCV, OCR, EXTRACCIÓN Y REVISIÓN MANUAL
+    # PESTAÑA 1: PANTALLA DIVIDIDA (ESTILO MONICA.IM DROPZONE + CALIPSO CAPTIA)
     # ==========================================================================
     with tab_lector:
-        col_carga, col_resultados = st.columns([1.05, 1.15], gap="large")
+        col_carga, col_resultados = st.columns([1.02, 1.18], gap="large")
 
         with col_carga:
             with st.container(border=True):
-                st.subheader("1. Entrada del Comprobante")
+                st.markdown(
+                    """
+                    <div class="captia-card-header">
+                        <span class="captia-card-title">1. Captura e Ingreso del Comprobante</span>
+                        <span class="captia-chip captia-chip-indigo">📥 Escáner Inteligente</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
                 usar_filtro_escaner = st.toggle(
-                    "Mejorar calidad de foto para OCR (Filtro Escáner)",
+                    "Mejorar calidad de foto para OCR (Filtro Escáner OpenCV)",
                     value=True,
                     help=(
                         "Ejecuta optimizar_para_tesseract(pil_image) con OpenCV: escala de grises, "
@@ -1413,22 +1641,21 @@ def main() -> None:
                 )
 
                 metodo_entrada = st.radio(
-                    "Origen de la imagen:",
-                    options=["Subir archivo (JPG, PNG)", "Tomar foto con cámara del celular / PC"],
+                    "Método de recepción:",
+                    options=["Subir archivo (JPG, PNG, WEBP)", "Capturar con cámara (Celular / PC)"],
                     horizontal=True,
                 )
 
                 archivo_imagen = None
                 if metodo_entrada.startswith("Subir"):
                     archivo_imagen = st.file_uploader(
-                        "Selecciona una imagen de factura o ticket:",
+                        "Arrastrá tu factura o ticket aquí, o hacé clic para explorar:",
                         type=["png", "jpg", "jpeg", "webp"],
                     )
                 else:
-                    archivo_imagen = st.camera_input("Captura el comprobante con tu cámara:")
+                    archivo_imagen = st.camera_input("Enfocá el comprobante con buena iluminación:")
 
                 if archivo_imagen is not None:
-                    # Guardar bytes originales en sesión para subirlos a Supabase Storage al confirmar
                     bytes_img = archivo_imagen.getvalue()
                     st.session_state["ultimo_archivo_bytes"] = bytes_img
                     st.session_state["ultimo_archivo_nombre"] = getattr(archivo_imagen, "name", "captura_camara.png")
@@ -1441,19 +1668,19 @@ def main() -> None:
                         else imagen_original.convert("RGB")
                     )
 
-                    with st.expander("🔍 Comparar Foto Original vs. Foto Optimizada (Filtro Escáner)", expanded=True):
+                    with st.expander("🔍 Vista previa comparativa: Original vs. Filtro Escáner", expanded=True):
                         col_img_orig, col_img_opt = st.columns(2)
                         with col_img_orig:
-                            st.image(imagen_original, caption="Foto Original", use_container_width=True)
+                            st.image(imagen_original, caption="Documento Original", use_container_width=True)
                         with col_img_opt:
                             st.image(
                                 imagen_optimizada,
-                                caption="Optimizada para Tesseract" if usar_filtro_escaner else "Sin Filtro Escáner",
+                                caption="Optimizada para OCR" if usar_filtro_escaner else "Sin Filtro Escáner",
                                 use_container_width=True,
                             )
 
-                    if st.button("🚀 Procesar Comprobante (OCR + IA)", type="primary", use_container_width=True):
-                        with st.spinner("Ejecutando Tesseract OCR (--oem 3 --psm 6)..."):
+                    if st.button("✨ Escanear y Extraer Datos con IA", type="primary", use_container_width=True):
+                        with st.spinner("Leyendo documento con Tesseract OCR (--oem 3 --psm 6)..."):
                             texto_detectado, alerta_ocr = ejecutar_ocr(imagen_optimizada, idioma="spa")
                             st.session_state["texto_ocr"] = texto_detectado
 
@@ -1462,11 +1689,11 @@ def main() -> None:
 
                         if not texto_detectado or len(texto_detectado.strip()) < 10:
                             st.error(
-                                "⚠️ La imagen no pudo procesarse correctamente o contiene muy poco texto legible. "
-                                "Intenta con una foto más nítida o cambia el estado del Filtro Escáner."
+                                "⚠️ La imagen contiene muy poco texto legible. "
+                                "Probá con una foto más nítida o alternando el Filtro Escáner."
                             )
                         else:
-                            with st.spinner("Extrayendo los 9 campos estructurados con IA..."):
+                            with st.spinner("Interpretando estructura contable con IA..."):
                                 error_ia = None
                                 if modo_ia.startswith("1."):
                                     datos_ext, error_ia = extraer_con_ollama_local(
@@ -1486,38 +1713,67 @@ def main() -> None:
 
                                 if error_ia:
                                     st.warning(
-                                        f"{error_ia}\nSe aplicó la extracción de respaldo por reglas (Regex)."
+                                        f"{error_ia}\nSe aplicó la extracción automática por plantillas Regex."
                                     )
                                     datos_ext = extraer_con_reglas_regex(texto_detectado)
                                 elif aplicar_hibrido_regex:
                                     datos_ext = aplicar_refuerzo_regex(datos_ext, texto_detectado)
 
                                 st.session_state["datos_actuales"] = datos_ext
-                                st.success("¡Extracción completada! Revisa los campos en el panel derecho.")
+                                st.success("✅ Comprobante indexado. Validá los datos en la bandeja derecha.")
 
         with col_resultados:
             with st.container(border=True):
-                st.subheader("2. Revisión y Corrección Manual")
-
-                with st.expander("📝 Ver texto crudo reconocido por Tesseract OCR", expanded=False):
-                    texto_editable_ocr = st.text_area(
-                        "Texto extraído por Tesseract (--oem 3 --psm 6):",
-                        value=st.session_state["texto_ocr"],
-                        height=170,
-                    )
-                    st.session_state["texto_ocr"] = texto_editable_ocr
-
                 datos_act = st.session_state["datos_actuales"]
+                campos_detectados = sum(
+                    1 for v in datos_act.values() if v and v != VALOR_NO_IDENTIFICADO
+                )
                 campos_criticos = ["emisor", "fecha_emision", "importe_total"]
                 faltantes = [
                     CAMPOS_COMPROBANTE[c]
                     for c in campos_criticos
                     if datos_act.get(c, VALOR_NO_IDENTIFICADO) == VALOR_NO_IDENTIFICADO
                 ]
+
+                if not st.session_state["texto_ocr"] and campos_detectados == 0:
+                    chip_html = '<span class="captia-chip captia-chip-indigo">⏳ Esperando documento</span>'
+                elif not faltantes:
+                    chip_html = f'<span class="captia-chip captia-chip-success">✅ Listo para aprobar ({campos_detectados}/9)</span>'
+                else:
+                    chip_html = f'<span class="captia-chip captia-chip-warning">⚠️ Revisión sugerida ({campos_detectados}/9)</span>'
+
+                st.markdown(
+                    f"""
+                    <div class="captia-card-header">
+                        <span class="captia-card-title">2. Bandeja de Validación Contable</span>
+                        {chip_html}
+                    </div>
+                    <div class="captia-kpi-grid">
+                        <div class="captia-kpi-box">
+                            <div class="captia-kpi-label">Comprobante</div>
+                            <div class="captia-kpi-val">{datos_act.get("tipo_documento", VALOR_NO_IDENTIFICADO)}</div>
+                        </div>
+                        <div class="captia-kpi-box">
+                            <div class="captia-kpi-label">CUIT Emisor</div>
+                            <div class="captia-kpi-val">{datos_act.get("cuit", VALOR_NO_IDENTIFICADO)}</div>
+                        </div>
+                        <div class="captia-kpi-box">
+                            <div class="captia-kpi-label">Fecha</div>
+                            <div class="captia-kpi-val">{datos_act.get("fecha_emision", VALOR_NO_IDENTIFICADO)}</div>
+                        </div>
+                        <div class="captia-kpi-box">
+                            <div class="captia-kpi-label">Importe Total</div>
+                            <div class="captia-kpi-val">{datos_act.get("moneda", "") if datos_act.get("moneda") != VALOR_NO_IDENTIFICADO else ""} {datos_act.get("importe_total", VALOR_NO_IDENTIFICADO)}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
                 if st.session_state["texto_ocr"] and faltantes:
                     st.warning(
-                        "⚠️ **Atención:** No se pudieron identificar algunos campos clave: "
-                        f"**{', '.join(faltantes)}**. Puedes completarlos manualmente en la tabla."
+                        "⚠️ **Validación asistida:** Completá o verificá manualmente: "
+                        f"**{', '.join(faltantes)}**."
                     )
 
                 df_revision = pd.DataFrame(
@@ -1538,10 +1794,10 @@ def main() -> None:
                     column_config={
                         "Clave": None,
                         "Campo del Comprobante": st.column_config.TextColumn(
-                            "Campo del Comprobante", disabled=True, width="medium"
+                            "Campo Contable", disabled=True, width="medium"
                         ),
                         "Valor Detectado (Editable)": st.column_config.TextColumn(
-                            "Valor Revisado (Haz doble clic para corregir)", width="large"
+                            "Valor Extraído (Doble clic para editar)", width="large"
                         ),
                     },
                     hide_index=True,
@@ -1555,19 +1811,26 @@ def main() -> None:
                 }
                 st.session_state["datos_actuales"] = datos_revisados
 
+                with st.expander("📝 Inspeccionar texto plano leído por OCR", expanded=False):
+                    texto_editable_ocr = st.text_area(
+                        "Salida cruda de Tesseract (--oem 3 --psm 6):",
+                        value=st.session_state["texto_ocr"],
+                        height=140,
+                    )
+                    st.session_state["texto_ocr"] = texto_editable_ocr
+
                 col_btn1, col_btn2, col_btn3 = st.columns(3)
 
                 with col_btn1:
-                    if st.button("➕ Guardar Comprobante", type="primary", use_container_width=True):
+                    if st.button("✅ Aprobar y Guardar", type="primary", use_container_width=True):
                         usuario_sesion = st.session_state.get("usuario_supabase")
                         bytes_actuales = st.session_state.get("ultimo_archivo_bytes")
 
-                        # Si el usuario inició sesión en Supabase, sube imagen a Storage y guarda en tabla 'facturas'
                         if usuario_sesion and cliente_supabase is not None:
                             if not bytes_actuales:
-                                st.warning("Primero sube o captura una imagen de comprobante antes de guardar en la nube.")
+                                st.warning("Primero subí o capturá un comprobante antes de guardar en la nube.")
                             else:
-                                with st.spinner("Subiendo imagen a Supabase Storage y registrando factura..."):
+                                with st.spinner("Sincronizando imagen y factura en Supabase..."):
                                     exito, msg_supa, url_img = guardar_comprobante_en_supabase(
                                         cliente=cliente_supabase,
                                         user_id=usuario_sesion["id"],
@@ -1583,7 +1846,6 @@ def main() -> None:
                                 else:
                                     st.error(msg_supa)
                         else:
-                            # Modo Demo Local en memoria de sesión
                             registro_local = {
                                 "fecha_carga": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "modo": "Demo Local",
@@ -1591,14 +1853,14 @@ def main() -> None:
                             registro_local.update(datos_revisados)
                             st.session_state["historial_comprobantes"].append(registro_local)
                             st.success(
-                                "Comprobante guardado en 'Registro Acumulado' (Modo Demo Local). "
-                                "Inicia sesión arriba para guardarlo permanentemente en Supabase."
+                                "Comprobante aprobado y guardado en el Repositorio de la sesión. "
+                                "Iniciá sesión arriba para resguardarlo en la nube."
                             )
 
                 with col_btn2:
                     json_individual = json.dumps(datos_revisados, ensure_ascii=False, indent=2)
                     st.download_button(
-                        label="⬇️ Descargar JSON",
+                        label="⬇️ Exportar JSON",
                         data=json_individual.encode("utf-8"),
                         file_name="comprobante_revisado.json",
                         mime="application/json",
@@ -1609,7 +1871,7 @@ def main() -> None:
                     df_export_ind = pd.DataFrame([datos_revisados])
                     csv_individual = df_export_ind.to_csv(index=False).encode("utf-8-sig")
                     st.download_button(
-                        label="⬇️ Descargar CSV",
+                        label="⬇️ Exportar CSV",
                         data=csv_individual,
                         file_name="comprobante_revisado.csv",
                         mime="text/csv",
@@ -1617,14 +1879,22 @@ def main() -> None:
                     )
 
     # ==========================================================================
-    # PESTAÑA 2: REGISTRO ACUMULADO (SUPABASE POR USUARIO O MODO DEMO LOCAL)
+    # PESTAÑA 2: REPOSITORIO DOCUMENTAL Y BUSCADOR RÁPIDO (ESTILO CALIPSO CAPTIA)
     # ==========================================================================
     with tab_historial:
         with st.container(border=True):
             usuario_sesion = st.session_state.get("usuario_supabase")
 
             if usuario_sesion and cliente_supabase is not None:
-                st.subheader(f"☁️ Mis Comprobantes en la Nube ({usuario_sesion['email']})")
+                st.markdown(
+                    f"""
+                    <div class="captia-card-header">
+                        <span class="captia-card-title">☁️ Repositorio Documental en la Nube ({usuario_sesion['email']})</span>
+                        <span class="captia-chip captia-chip-success">🔒 Sincronizado con Supabase</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
                 registros_nube, error_consulta = consultar_facturas_usuario_supabase(
                     cliente_supabase, usuario_sesion["id"]
                 )
@@ -1632,10 +1902,14 @@ def main() -> None:
                     st.error(error_consulta)
                 elif not registros_nube:
                     st.info(
-                        "Aún no tienes comprobantes guardados en tu cuenta de Supabase. "
-                        "Procesa una factura en la pestaña 1 y presiona **'➕ Guardar Comprobante'**."
+                        "Aún no tenés comprobantes aprobados en tu repositorio cloud. "
+                        "Escaneá una factura en la pestaña 1 y presioná **'✅ Aprobar y Guardar'**."
                     )
                 else:
+                    filtro_busqueda = st.text_input(
+                        "🔎 Buscar por proveedor, CUIT, número o fecha:",
+                        placeholder="Ej: 30-12345678-9 o Factura A...",
+                    )
                     columnas_mostrar = [
                         "created_at",
                         "tipo_documento",
@@ -1653,11 +1927,17 @@ def main() -> None:
                     cols_existentes = [c for c in columnas_mostrar if c in df_nube.columns]
                     df_vista = df_nube[cols_existentes] if cols_existentes else df_nube
 
+                    if filtro_busqueda.strip():
+                        mascara = df_vista.astype(str).apply(
+                            lambda col: col.str.contains(filtro_busqueda.strip(), case=False, na=False)
+                        ).any(axis=1)
+                        df_vista = df_vista[mascara]
+
                     st.dataframe(
                         df_vista,
                         column_config={
                             "imagen_url": st.column_config.LinkColumn(
-                                "Foto del Comprobante", display_text="Ver imagen"
+                                "Documento Original", display_text="Ver comprobante"
                             )
                         },
                         use_container_width=True,
@@ -1668,7 +1948,7 @@ def main() -> None:
                     with col_exp1:
                         csv_nube = df_vista.to_csv(index=False).encode("utf-8-sig")
                         st.download_button(
-                            "📥 Exportar Mis Facturas a CSV",
+                            "📥 Descargar Lote en CSV",
                             data=csv_nube,
                             file_name="mis_facturas_supabase.csv",
                             mime="text/csv",
@@ -1677,35 +1957,53 @@ def main() -> None:
                     with col_exp2:
                         json_nube = json.dumps(registros_nube, ensure_ascii=False, indent=2, default=str).encode("utf-8")
                         st.download_button(
-                            "📥 Exportar Mis Facturas a JSON",
+                            "📥 Descargar Lote en JSON",
                             data=json_nube,
                             file_name="mis_facturas_supabase.json",
                             mime="application/json",
                             use_container_width=True,
                         )
             else:
-                st.subheader("🗂️ Comprobantes Registrados en la Sesión (Modo Demo Local)")
+                st.markdown(
+                    """
+                    <div class="captia-card-header">
+                        <span class="captia-card-title">🗂️ Repositorio de Comprobantes de la Sesión</span>
+                        <span class="captia-chip captia-chip-indigo">⚡ Modo Demo Local</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
                 if supabase_configurado:
                     st.caption(
-                        "💡 Estás viendo los comprobantes temporales de la sesión local. "
-                        "Haz clic en **'👤 Iniciar sesión / Registro'** arriba a la derecha para ver y guardar tus propios comprobantes en Supabase."
+                        "💡 Estás visualizando la bandeja local temporal. "
+                        "Hacé clic en **'👤 Iniciar sesión'** arriba a la derecha para acceder a tu repositorio permanente en la nube."
                     )
                 historial = st.session_state["historial_comprobantes"]
 
                 if not historial:
                     st.info(
-                        "Aún no has guardado comprobantes en el lote. "
-                        "Procesa una factura en la pestaña 1 y presiona **'➕ Guardar Comprobante'**."
+                        "Todavía no aprobaste comprobantes en esta sesión. "
+                        "Procesá una factura en la pestaña 1 y presioná **'✅ Aprobar y Guardar'**."
                     )
                 else:
+                    filtro_local = st.text_input(
+                        "🔎 Filtrar comprobantes por emisor, CUIT o tipo:",
+                        placeholder="Escribí para filtrar...",
+                    )
                     df_hist = pd.DataFrame(historial)
+                    if filtro_local.strip():
+                        mascara_loc = df_hist.astype(str).apply(
+                            lambda col: col.str.contains(filtro_local.strip(), case=False, na=False)
+                        ).any(axis=1)
+                        df_hist = df_hist[mascara_loc]
+
                     st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
                     col_exp1, col_exp2, col_limpiar = st.columns(3)
                     with col_exp1:
                         csv_lote = df_hist.to_csv(index=False).encode("utf-8-sig")
                         st.download_button(
-                            "📥 Exportar Todos a CSV",
+                            "📥 Exportar Lote a CSV",
                             data=csv_lote,
                             file_name="registro_comprobantes.csv",
                             mime="text/csv",
@@ -1714,14 +2012,14 @@ def main() -> None:
                     with col_exp2:
                         json_lote = json.dumps(historial, ensure_ascii=False, indent=2).encode("utf-8")
                         st.download_button(
-                            "📥 Exportar Todos a JSON",
+                            "📥 Exportar Lote a JSON",
                             data=json_lote,
                             file_name="registro_comprobantes.json",
                             mime="application/json",
                             use_container_width=True,
                         )
                     with col_limpiar:
-                        if st.button("🗑️ Vaciar Registro Local", use_container_width=True):
+                        if st.button("🗑️ Limpiar Bandeja Local", use_container_width=True):
                             st.session_state["historial_comprobantes"] = []
                             st.rerun()
 
@@ -1730,11 +2028,18 @@ def main() -> None:
     # ==========================================================================
     with tab_evaluacion:
         with st.container(border=True):
-            st.subheader("📊 Evaluación de Exactitud (Ground Truth)")
             st.markdown(
-                "Esta sección cumple con el **Objetivo Específico 5 del TFI**: comparar los datos extraídos "
-                "por la aplicación frente a una **transcripción manual de referencia** para medir el porcentaje "
-                "de aciertos."
+                """
+                <div class="captia-card-header">
+                    <span class="captia-card-title">📊 Auditoría de Exactitud (Ground Truth — TFI Obj. 5)</span>
+                    <span class="captia-chip captia-chip-indigo">🎯 Control de Calidad IA</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "Compará los datos extraídos automáticamente frente a la **transcripción manual de referencia** "
+                "del comprobante para medir la tasa de exactitud del motor."
             )
 
             df_ref_inicial = pd.DataFrame(
@@ -1753,7 +2058,7 @@ def main() -> None:
                 ]
             )
 
-            st.markdown("##### Completa la columna **'Transcripción de Referencia (Real)'** con los datos verdaderos del comprobante:")
+            st.markdown("##### Completá la columna **'Transcripción de Referencia (Real)'** con los valores reales del comprobante:")
             df_ref_editado = st.data_editor(
                 df_ref_inicial,
                 column_config={
@@ -1763,7 +2068,7 @@ def main() -> None:
                         "Valor Extraído por la App", disabled=True
                     ),
                     "Transcripción de Referencia (Real)": st.column_config.TextColumn(
-                        "Transcripción de Referencia (Escribe el valor real)"
+                        "Transcripción de Referencia (Escribí el valor real)"
                     ),
                 },
                 hide_index=True,
@@ -1789,7 +2094,7 @@ def main() -> None:
                 )
                 csv_eval = df_comparacion.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
-                    "📥 Descargar Informe de Evaluación (CSV)",
+                    "📥 Descargar Informe de Auditoría (CSV)",
                     data=csv_eval,
                     file_name="evaluacion_exactitud_tfi.csv",
                     mime="text/csv",
