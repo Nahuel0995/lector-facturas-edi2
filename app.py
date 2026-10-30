@@ -302,6 +302,158 @@ def consultar_facturas_usuario_supabase(cliente: Client, user_id: str) -> Tuple[
         return [], f"No se pudieron recuperar las facturas desde Supabase: {exc}"
 
 
+def eliminar_facturas_supabase(
+    cliente: Client,
+    user_id: str,
+    registros_a_borrar: List[Dict[str, Any]],
+) -> Tuple[bool, str]:
+    """
+    Elimina uno o varios comprobantes seleccionados de la tabla 'facturas' de Supabase
+    (filtrando por id y user_id) e intenta limpiar su archivo asociado en Storage.
+    """
+    if not registros_a_borrar:
+        return False, "No seleccionaste ningún comprobante para eliminar."
+
+    ids_borrar = [str(r["id"]) for r in registros_a_borrar if r.get("id") is not None]
+    rutas_storage = [str(r["storage_path"]) for r in registros_a_borrar if r.get("storage_path")]
+
+    if not ids_borrar:
+        return False, "No se encontraron identificadores válidos para eliminar."
+
+    borrados_reales = 0
+    try:
+        for id_factura in ids_borrar:
+            res_del = (
+                cliente.table("facturas")
+                .delete()
+                .eq("id", id_factura)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            if hasattr(res_del, "data") and res_del.data:
+                borrados_reales += len(res_del.data)
+    except Exception as exc_del:
+        return False, f"Error al eliminar el comprobante en Supabase: {exc_del}"
+
+    if borrados_reales == 0:
+        return (
+            False,
+            "⚠️ Supabase bloqueó el borrado por falta de permiso RLS DELETE en la tabla `facturas`. "
+            "Ejecutá en el SQL Editor de Supabase: "
+            "`CREATE POLICY \"Usuarios pueden eliminar sus propias facturas\" ON public.facturas FOR DELETE TO authenticated USING (auth.uid() = user_id);`",
+        )
+
+    if rutas_storage:
+        try:
+            cliente.storage.from_("comprobantes").remove(rutas_storage)
+        except Exception:
+            pass
+
+    texto_plural = "comprobante eliminado" if borrados_reales == 1 else f"{borrados_reales} comprobantes eliminados"
+    return True, f"✅ {texto_plural} correctamente del historial."
+
+
+def formatear_fecha_guardado(valor_fecha: Any) -> Tuple[str, str]:
+    """Convierte timestamps ISO o locales en ('DD/MM/AAAA HH:MM:SS', 'DD/MM/AAAA')."""
+    texto = str(valor_fecha or "").strip()
+    if not texto:
+        return ("Sin fecha", "Sin fecha")
+    try:
+        limpio = texto.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(limpio)
+        return (dt.strftime("%d/%m/%Y %H:%M:%S"), dt.strftime("%d/%m/%Y"))
+    except Exception:
+        try:
+            dt = datetime.strptime(texto[:19], "%Y-%m-%d %H:%M:%S")
+            return (dt.strftime("%d/%m/%Y %H:%M:%S"), dt.strftime("%d/%m/%Y"))
+        except Exception:
+            return (texto, texto[:10])
+
+
+def renderizar_filtros_seleccionables(df_entrada: pd.DataFrame, prefijo: str) -> pd.DataFrame:
+    """
+    Renderiza filtros desplegables de selección (sin escribir) para todas las categorías
+    del comprobante (Fecha de comprobante, Tipo, Emisor, CUIT, Moneda, N° Comprobante,
+    Importe Neto, IVA, Importe Total y Fecha de Guardado).
+    """
+    clave_reset = f"reset_version_{prefijo}"
+    if clave_reset not in st.session_state:
+        st.session_state[clave_reset] = 0
+    ver = st.session_state[clave_reset]
+
+    definicion_categorias = [
+        ("fecha_emision", "📅 Fecha Comprobante"),
+        ("tipo_documento", "📄 Tipo de Documento"),
+        ("emisor", "🏢 Emisor / Comercio"),
+        ("cuit", "🪪 CUIT"),
+        ("moneda", "💱 Moneda"),
+        ("numero_comprobante", "🔢 N° Comprobante"),
+        ("importe_neto", "💵 Importe Neto"),
+        ("impuestos_iva", "🧾 IVA / Impuestos"),
+        ("importe_total", "💰 Importe Total"),
+        ("_dia_guardado", "🕒 Fecha de Guardado"),
+    ]
+
+    st.markdown("##### 🎛️ Filtrar historial seleccionando por categoría")
+
+    selecciones: Dict[str, str] = {}
+
+    # Fila 1 (5 categorías principales)
+    cols_fila_1 = st.columns(5)
+    for idx, (col_df, etiqueta) in enumerate(definicion_categorias[:5]):
+        with cols_fila_1[idx]:
+            if col_df in df_entrada.columns:
+                valores_unicos = sorted(
+                    {str(v).strip() for v in df_entrada[col_df].dropna().tolist() if str(v).strip()}
+                )
+            else:
+                valores_unicos = []
+            selecciones[col_df] = st.selectbox(
+                etiqueta,
+                options=["Todos"] + valores_unicos,
+                index=0,
+                key=f"sel_{prefijo}_{col_df}_{ver}",
+            )
+
+    # Fila 2 (5 categorías adicionales: numeración, importes y fecha de carga)
+    cols_fila_2 = st.columns(5)
+    for idx, (col_df, etiqueta) in enumerate(definicion_categorias[5:]):
+        with cols_fila_2[idx]:
+            if col_df in df_entrada.columns:
+                valores_unicos = sorted(
+                    {str(v).strip() for v in df_entrada[col_df].dropna().tolist() if str(v).strip()}
+                )
+            else:
+                valores_unicos = []
+            selecciones[col_df] = st.selectbox(
+                etiqueta,
+                options=["Todos"] + valores_unicos,
+                index=0,
+                key=f"sel_{prefijo}_{col_df}_{ver}",
+            )
+
+    df_filtrado = df_entrada.copy()
+    filtros_activos = 0
+    for col_df, valor_elegido in selecciones.items():
+        if valor_elegido != "Todos" and col_df in df_filtrado.columns:
+            filtros_activos += 1
+            df_filtrado = df_filtrado[df_filtrado[col_df].astype(str).str.strip() == valor_elegido]
+
+    col_info_f, col_btn_reset = st.columns([4, 1], vertical_alignment="center")
+    with col_info_f:
+        st.caption(
+            f"Mostrando **{len(df_filtrado)}** de **{len(df_entrada)}** comprobante(s) guardado(s)"
+            + (f" ({filtros_activos} filtro/s activo/s)." if filtros_activos else ".")
+        )
+    with col_btn_reset:
+        if filtros_activos > 0:
+            if st.button("🔄 Limpiar filtros", key=f"btn_clear_{prefijo}", use_container_width=True):
+                st.session_state[clave_reset] += 1
+                st.rerun()
+
+    return df_filtrado
+
+
 # ==============================================================================
 # 4. MÓDULO DE EXTRACCIÓN HÍBRIDA (GROQ / GEMINI / OLLAMA LOCAL + REGEX)
 # ==============================================================================
@@ -783,7 +935,7 @@ def aplicar_estilos_saas() -> None:
         }
 
         .block-container {
-            padding-top: 1.35rem !important;
+            padding-top: 4.6rem !important;
             padding-bottom: 3.5rem !important;
             max-width: 1300px !important;
         }
@@ -811,17 +963,18 @@ def aplicar_estilos_saas() -> None:
 
         /* Barra de navegación superior SaaS */
         .saas-navbar {
-            background: rgba(255, 255, 255, 0.92);
+            background: rgba(255, 255, 255, 0.96);
             backdrop-filter: blur(12px);
             border: 1px solid var(--border-card);
-            border-radius: 14px;
-            padding: 0.65rem 1.25rem;
+            border-radius: 12px;
+            padding: 0.7rem 1.25rem;
+            margin: 0;
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 1rem;
             flex-wrap: wrap;
-            box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
+            box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
         }
 
         .saas-brand {
@@ -1198,6 +1351,15 @@ def aplicar_estilos_saas() -> None:
             background-color: transparent !important;
         }
 
+        [data-baseweb="select"] > div {
+            cursor: pointer !important;
+        }
+
+        [data-baseweb="select"] input {
+            caret-color: transparent !important;
+            cursor: pointer !important;
+        }
+
         [data-baseweb="input"] > div:focus-within,
         [data-baseweb="textarea"] > div:focus-within,
         [data-baseweb="select"] > div:focus-within {
@@ -1299,7 +1461,7 @@ def renderizar_encabezado_y_auth(cliente_supabase: Optional[Client], supabase_co
     """
     usuario = st.session_state.get("usuario_supabase")
 
-    col_nav, col_boton_auth = st.columns([4.0, 1.15], gap="small")
+    col_nav, col_boton_auth = st.columns([4.1, 1.1], gap="small", vertical_alignment="center")
 
     with col_nav:
         estado_badge = (
@@ -1879,7 +2041,7 @@ def main() -> None:
                     )
 
     # ==========================================================================
-    # PESTAÑA 2: REPOSITORIO DOCUMENTAL Y BUSCADOR RÁPIDO (ESTILO CALIPSO CAPTIA)
+    # PESTAÑA 2: REPOSITORIO DOCUMENTAL CON FILTROS SELECCIONABLES Y BORRADO
     # ==========================================================================
     with tab_historial:
         with st.container(border=True):
@@ -1906,63 +2068,129 @@ def main() -> None:
                         "Escaneá una factura en la pestaña 1 y presioná **'✅ Aprobar y Guardar'**."
                     )
                 else:
-                    filtro_busqueda = st.text_input(
-                        "🔎 Buscar por proveedor, CUIT, número o fecha:",
-                        placeholder="Ej: 30-12345678-9 o Factura A...",
-                    )
-                    columnas_mostrar = [
-                        "created_at",
-                        "tipo_documento",
-                        "emisor",
-                        "cuit",
-                        "fecha_emision",
-                        "numero_comprobante",
-                        "importe_neto",
-                        "impuestos_iva",
-                        "importe_total",
-                        "moneda",
-                        "imagen_url",
-                    ]
                     df_nube = pd.DataFrame(registros_nube)
-                    cols_existentes = [c for c in columnas_mostrar if c in df_nube.columns]
-                    df_vista = df_nube[cols_existentes] if cols_existentes else df_nube
-
-                    if filtro_busqueda.strip():
-                        mascara = df_vista.astype(str).apply(
-                            lambda col: col.str.contains(filtro_busqueda.strip(), case=False, na=False)
-                        ).any(axis=1)
-                        df_vista = df_vista[mascara]
-
-                    st.dataframe(
-                        df_vista,
-                        column_config={
-                            "imagen_url": st.column_config.LinkColumn(
-                                "Documento Original", display_text="Ver comprobante"
-                            )
-                        },
-                        use_container_width=True,
-                        hide_index=True,
+                    fechas_fmt = df_nube.get("created_at", pd.Series([""] * len(df_nube))).apply(
+                        formatear_fecha_guardado
                     )
+                    df_nube["fecha_guardado"] = [par[0] for par in fechas_fmt]
+                    df_nube["_dia_guardado"] = [par[1] for par in fechas_fmt]
 
-                    col_exp1, col_exp2 = st.columns(2)
-                    with col_exp1:
-                        csv_nube = df_vista.to_csv(index=False).encode("utf-8-sig")
-                        st.download_button(
-                            "📥 Descargar Lote en CSV",
-                            data=csv_nube,
-                            file_name="mis_facturas_supabase.csv",
-                            mime="text/csv",
+                    # Filtros desplegables de selección para todas las categorías (sin escribir)
+                    df_filtrado_nube = renderizar_filtros_seleccionables(df_nube, prefijo="nube")
+
+                    if df_filtrado_nube.empty:
+                        st.warning("No hay comprobantes que coincidan con la combinación de filtros seleccionada.")
+                    else:
+                        columnas_orden = [
+                            "id",
+                            "storage_path",
+                            "fecha_guardado",
+                            "tipo_documento",
+                            "emisor",
+                            "cuit",
+                            "fecha_emision",
+                            "numero_comprobante",
+                            "importe_neto",
+                            "impuestos_iva",
+                            "importe_total",
+                            "moneda",
+                            "imagen_url",
+                        ]
+                        cols_presentes = [c for c in columnas_orden if c in df_filtrado_nube.columns]
+                        df_tabla_nube = df_filtrado_nube[cols_presentes].copy()
+                        df_tabla_nube.insert(0, "_eliminar", False)
+
+                        cols_bloqueadas = [c for c in df_tabla_nube.columns if c != "_eliminar"]
+
+                        st.caption("💡 Marcá la casilla **🗑️ Borrar** en cualquier fila si guardaste un comprobante por error y presioná **Eliminar seleccionados**.")
+                        df_editor_nube = st.data_editor(
+                            df_tabla_nube,
+                            column_config={
+                                "_eliminar": st.column_config.CheckboxColumn(
+                                    "🗑️ Borrar",
+                                    help="Seleccioná este comprobante para eliminarlo del historial",
+                                    default=False,
+                                    width="small",
+                                ),
+                                "id": None,
+                                "storage_path": None,
+                                "fecha_guardado": st.column_config.TextColumn("Fecha Guardado"),
+                                "tipo_documento": st.column_config.TextColumn("Tipo"),
+                                "emisor": st.column_config.TextColumn("Emisor / Comercio"),
+                                "cuit": st.column_config.TextColumn("CUIT"),
+                                "fecha_emision": st.column_config.TextColumn("Fecha Comprobante"),
+                                "numero_comprobante": st.column_config.TextColumn("N° Comprobante"),
+                                "importe_neto": st.column_config.TextColumn("Importe Neto"),
+                                "impuestos_iva": st.column_config.TextColumn("IVA / Impuestos"),
+                                "importe_total": st.column_config.TextColumn("Importe Total"),
+                                "moneda": st.column_config.TextColumn("Moneda"),
+                                "imagen_url": st.column_config.LinkColumn(
+                                    "Foto", display_text="Ver comprobante"
+                                ),
+                            },
+                            disabled=cols_bloqueadas,
+                            hide_index=True,
                             use_container_width=True,
+                            key="tabla_historial_nube",
                         )
-                    with col_exp2:
-                        json_nube = json.dumps(registros_nube, ensure_ascii=False, indent=2, default=str).encode("utf-8")
-                        st.download_button(
-                            "📥 Descargar Lote en JSON",
-                            data=json_nube,
-                            file_name="mis_facturas_supabase.json",
-                            mime="application/json",
-                            use_container_width=True,
-                        )
+
+                        filas_marcadas_nube = df_editor_nube[df_editor_nube["_eliminar"] == True]
+                        cant_marcadas_nube = len(filas_marcadas_nube)
+
+                        col_del, col_exp1, col_exp2 = st.columns([1.2, 1, 1])
+                        with col_del:
+                            etiqueta_borrar = (
+                                f"🗑️ Eliminar seleccionados ({cant_marcadas_nube})"
+                                if cant_marcadas_nube > 0
+                                else "🗑️ Eliminar seleccionados"
+                            )
+                            if st.button(
+                                etiqueta_borrar,
+                                key="btn_borrar_nube",
+                                disabled=(cant_marcadas_nube == 0),
+                                use_container_width=True,
+                            ):
+                                registros_borrar = filas_marcadas_nube.to_dict(orient="records")
+                                with st.spinner("Eliminando comprobante(s) de Supabase..."):
+                                    ok_del, msg_del = eliminar_facturas_supabase(
+                                        cliente_supabase,
+                                        usuario_sesion["id"],
+                                        registros_borrar,
+                                    )
+                                if ok_del:
+                                    st.success(msg_del)
+                                    st.rerun()
+                                else:
+                                    st.error(msg_del)
+
+                        cols_exportar = [
+                            c for c in cols_presentes if c not in ("id", "storage_path")
+                        ]
+                        df_export_nube = df_filtrado_nube[cols_exportar]
+
+                        with col_exp1:
+                            csv_nube = df_export_nube.to_csv(index=False).encode("utf-8-sig")
+                            st.download_button(
+                                "📥 Descargar Vista en CSV",
+                                data=csv_nube,
+                                file_name="mis_facturas_supabase.csv",
+                                mime="text/csv",
+                                use_container_width=True,
+                            )
+                        with col_exp2:
+                            json_nube = json.dumps(
+                                df_export_nube.to_dict(orient="records"),
+                                ensure_ascii=False,
+                                indent=2,
+                                default=str,
+                            ).encode("utf-8")
+                            st.download_button(
+                                "📥 Descargar Vista en JSON",
+                                data=json_nube,
+                                file_name="mis_facturas_supabase.json",
+                                mime="application/json",
+                                use_container_width=True,
+                            )
             else:
                 st.markdown(
                     """
@@ -1986,42 +2214,120 @@ def main() -> None:
                         "Procesá una factura en la pestaña 1 y presioná **'✅ Aprobar y Guardar'**."
                     )
                 else:
-                    filtro_local = st.text_input(
-                        "🔎 Filtrar comprobantes por emisor, CUIT o tipo:",
-                        placeholder="Escribí para filtrar...",
-                    )
                     df_hist = pd.DataFrame(historial)
-                    if filtro_local.strip():
-                        mascara_loc = df_hist.astype(str).apply(
-                            lambda col: col.str.contains(filtro_local.strip(), case=False, na=False)
-                        ).any(axis=1)
-                        df_hist = df_hist[mascara_loc]
+                    df_hist["_idx_origen"] = df_hist.index
+                    fechas_loc = df_hist.get("fecha_carga", pd.Series([""] * len(df_hist))).apply(
+                        formatear_fecha_guardado
+                    )
+                    df_hist["fecha_guardado"] = [par[0] for par in fechas_loc]
+                    df_hist["_dia_guardado"] = [par[1] for par in fechas_loc]
 
-                    st.dataframe(df_hist, use_container_width=True, hide_index=True)
+                    # Filtros desplegables de selección para todas las categorías (sin escribir)
+                    df_filtrado_loc = renderizar_filtros_seleccionables(df_hist, prefijo="local")
 
-                    col_exp1, col_exp2, col_limpiar = st.columns(3)
-                    with col_exp1:
-                        csv_lote = df_hist.to_csv(index=False).encode("utf-8-sig")
-                        st.download_button(
-                            "📥 Exportar Lote a CSV",
-                            data=csv_lote,
-                            file_name="registro_comprobantes.csv",
-                            mime="text/csv",
+                    if df_filtrado_loc.empty:
+                        st.warning("No hay comprobantes locales que coincidan con los filtros seleccionados.")
+                    else:
+                        cols_orden_loc = [
+                            "_idx_origen",
+                            "fecha_guardado",
+                            "tipo_documento",
+                            "emisor",
+                            "cuit",
+                            "fecha_emision",
+                            "numero_comprobante",
+                            "importe_neto",
+                            "impuestos_iva",
+                            "importe_total",
+                            "moneda",
+                        ]
+                        cols_pres_loc = [c for c in cols_orden_loc if c in df_filtrado_loc.columns]
+                        df_tabla_loc = df_filtrado_loc[cols_pres_loc].copy()
+                        df_tabla_loc.insert(0, "_eliminar", False)
+
+                        cols_bloq_loc = [c for c in df_tabla_loc.columns if c != "_eliminar"]
+
+                        st.caption("💡 Marcá la casilla **🗑️ Borrar** en cualquier fila si guardaste un comprobante por error y presioná **Eliminar seleccionados**.")
+                        df_editor_loc = st.data_editor(
+                            df_tabla_loc,
+                            column_config={
+                                "_eliminar": st.column_config.CheckboxColumn(
+                                    "🗑️ Borrar",
+                                    help="Seleccioná este comprobante para eliminarlo del historial",
+                                    default=False,
+                                    width="small",
+                                ),
+                                "_idx_origen": None,
+                                "fecha_guardado": st.column_config.TextColumn("Fecha Guardado"),
+                                "tipo_documento": st.column_config.TextColumn("Tipo"),
+                                "emisor": st.column_config.TextColumn("Emisor / Comercio"),
+                                "cuit": st.column_config.TextColumn("CUIT"),
+                                "fecha_emision": st.column_config.TextColumn("Fecha Comprobante"),
+                                "numero_comprobante": st.column_config.TextColumn("N° Comprobante"),
+                                "importe_neto": st.column_config.TextColumn("Importe Neto"),
+                                "impuestos_iva": st.column_config.TextColumn("IVA / Impuestos"),
+                                "importe_total": st.column_config.TextColumn("Importe Total"),
+                                "moneda": st.column_config.TextColumn("Moneda"),
+                            },
+                            disabled=cols_bloq_loc,
+                            hide_index=True,
                             use_container_width=True,
+                            key="tabla_historial_local",
                         )
-                    with col_exp2:
-                        json_lote = json.dumps(historial, ensure_ascii=False, indent=2).encode("utf-8")
-                        st.download_button(
-                            "📥 Exportar Lote a JSON",
-                            data=json_lote,
-                            file_name="registro_comprobantes.json",
-                            mime="application/json",
-                            use_container_width=True,
-                        )
-                    with col_limpiar:
-                        if st.button("🗑️ Limpiar Bandeja Local", use_container_width=True):
-                            st.session_state["historial_comprobantes"] = []
-                            st.rerun()
+
+                        filas_marcadas_loc = df_editor_loc[df_editor_loc["_eliminar"] == True]
+                        cant_marcadas_loc = len(filas_marcadas_loc)
+
+                        col_del_l, col_exp1, col_exp2, col_limpiar = st.columns([1.2, 1, 1, 1])
+                        with col_del_l:
+                            etiqueta_borrar_loc = (
+                                f"🗑️ Eliminar seleccionados ({cant_marcadas_loc})"
+                                if cant_marcadas_loc > 0
+                                else "🗑️ Eliminar seleccionados"
+                            )
+                            if st.button(
+                                etiqueta_borrar_loc,
+                                key="btn_borrar_local",
+                                disabled=(cant_marcadas_loc == 0),
+                                use_container_width=True,
+                            ):
+                                indices_a_quitar = set(filas_marcadas_loc["_idx_origen"].tolist())
+                                st.session_state["historial_comprobantes"] = [
+                                    item
+                                    for idx, item in enumerate(st.session_state["historial_comprobantes"])
+                                    if idx not in indices_a_quitar
+                                ]
+                                st.rerun()
+
+                        cols_exp_loc = [c for c in cols_pres_loc if c != "_idx_origen"]
+                        df_export_loc = df_filtrado_loc[cols_exp_loc]
+
+                        with col_exp1:
+                            csv_lote = df_export_loc.to_csv(index=False).encode("utf-8-sig")
+                            st.download_button(
+                                "📥 Exportar Vista a CSV",
+                                data=csv_lote,
+                                file_name="registro_comprobantes.csv",
+                                mime="text/csv",
+                                use_container_width=True,
+                            )
+                        with col_exp2:
+                            json_lote = json.dumps(
+                                df_export_loc.to_dict(orient="records"),
+                                ensure_ascii=False,
+                                indent=2,
+                            ).encode("utf-8")
+                            st.download_button(
+                                "📥 Exportar Vista a JSON",
+                                data=json_lote,
+                                file_name="registro_comprobantes.json",
+                                mime="application/json",
+                                use_container_width=True,
+                            )
+                        with col_limpiar:
+                            if st.button("🗑️ Vaciar Todo", use_container_width=True):
+                                st.session_state["historial_comprobantes"] = []
+                                st.rerun()
 
     # ==========================================================================
     # PESTAÑA 3: EVALUACIÓN DE EXACTITUD CONTRA TRANSCRIPCIÓN DE REFERENCIA
