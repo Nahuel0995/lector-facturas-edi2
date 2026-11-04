@@ -300,29 +300,54 @@ def optimizar_para_tesseract(pil_image: Image.Image) -> Image.Image:
     return Image.fromarray(binarizada)
 
 
+def calcular_nitidez_imagen(pil_image: Image.Image) -> float:
+    """
+    Estima el nivel de enfoque/nitidez de la foto mediante la varianza del Laplaciano (OpenCV)
+    o la desviación estándar de bordes (Pillow). Valores muy bajos (< 45) indican foto borrosa.
+    """
+    try:
+        img_gris = np.array(pil_image.convert("L"))
+        if OPENCV_DISPONIBLE and cv2 is not None:
+            return float(cv2.Laplacian(img_gris, cv2.CV_64F).var())
+        bordes_pil = pil_image.convert("L").filter(ImageFilter.FIND_EDGES)
+        return float(np.var(np.array(bordes_pil)))
+    except Exception:
+        return 100.0
+
+
 def ejecutar_ocr(imagen: Image.Image, idioma: str = "spa") -> Tuple[str, Optional[str]]:
     """
     Ejecuta Tesseract OCR sobre la imagen con la configuración óptima para facturas
     (config='--oem 3 --psm 6'). Si 'spa' no está disponible, reintenta con 'eng'.
+    Captura cualquier excepción devolviendo mensajes amigables para el usuario.
     """
     config_optima = "--oem 3 --psm 6"
     try:
         texto = pytesseract.image_to_string(imagen, lang=idioma, config=config_optima)
         return texto.strip(), None
-    except pytesseract.TesseractError as err:
+    except pytesseract.TesseractError:
         if idioma != "eng":
             try:
                 texto = pytesseract.image_to_string(imagen, lang="eng", config=config_optima)
                 aviso = (
-                    "Se procesó con el paquete en inglés ('eng') porque no se detectó "
-                    "el paquete 'spa' de Tesseract."
+                    "ℹ️ Se procesó el comprobante con el diccionario base porque no se detectó "
+                    "el paquete de idioma español ('spa') en el servidor."
                 )
                 return texto.strip(), aviso
-            except Exception as err_fallback:
-                return "", f"Error al ejecutar Tesseract OCR: {err_fallback}"
-        return "", f"Error de Tesseract OCR: {err}"
-    except Exception as exc:
-        return "", f"No se pudo ejecutar Tesseract OCR. Verifica su instalación. Detalle: {exc}"
+            except Exception:
+                return (
+                    "",
+                    "⚠️ No se pudo leer el texto de la imagen. Intentá subir una foto más nítida y con buena luz.",
+                )
+        return (
+            "",
+            "⚠️ El motor OCR tuvo dificultades para procesar la imagen. Verificá que el archivo no esté dañado.",
+        )
+    except Exception:
+        return (
+            "",
+            "⚠️ El motor de lectura óptica (Tesseract OCR) no está disponible o no pudo procesar este archivo.",
+        )
 
 
 # ==============================================================================
@@ -588,6 +613,145 @@ def renderizar_filtros_seleccionables(df_entrada: pd.DataFrame, prefijo: str) ->
                 st.rerun()
 
     return df_filtrado
+
+
+def convertir_monto_a_float(valor: Any) -> float:
+    """
+    Convierte cadenas de importes (ej. '18.948,87', '$ 18,948.87', '18948.87')
+    en valores numéricos float para cálculos y gráficos en Pandas.
+    Devuelve 0.0 si el valor es 'No identificado' o inválido.
+    """
+    if valor is None:
+        return 0.0
+    if isinstance(valor, (int, float)):
+        return float(valor)
+
+    texto = str(valor).strip()
+    if not texto or texto.lower() in {"no identificado", "n/a", "null", "none", "-"}:
+        return 0.0
+
+    # Conservar únicamente dígitos, puntos, comas y signo negativo
+    limpio = re.sub(r"[^\d.,-]", "", texto)
+    if not limpio:
+        return 0.0
+
+    try:
+        if "," in limpio and "." in limpio:
+            # Determinar cuál aparece último como separador decimal
+            if limpio.rfind(",") > limpio.rfind("."):
+                # Formato 18.948,87 -> 18948.87
+                limpio = limpio.replace(".", "").replace(",", ".")
+            else:
+                # Formato 18,948.87 -> 18948.87
+                limpio = limpio.replace(",", "")
+        elif "," in limpio:
+            partes = limpio.split(",")
+            if len(partes[-1]) in (1, 2):
+                limpio = limpio.replace(",", ".")
+            else:
+                limpio = limpio.replace(",", "")
+        elif limpio.count(".") > 1:
+            partes = limpio.split(".")
+            if len(partes[-1]) in (1, 2):
+                limpio = "".join(partes[:-1]) + "." + partes[-1]
+            else:
+                limpio = "".join(partes)
+
+        return round(float(limpio), 2)
+    except Exception:
+        return 0.0
+
+
+def formatear_importe_metrica(valor: Any, moneda: str = "$") -> str:
+    """Formatea un importe para mostrarlo de forma clara y elegante en st.metric."""
+    texto_moneda = "$" if str(moneda).strip() in ("", VALOR_NO_IDENTIFICADO) else str(moneda).strip()
+    monto_num = convertir_monto_a_float(valor)
+    if monto_num > 0:
+        return f"{texto_moneda} {monto_num:,.2f}"
+    texto_val = str(valor or "").strip()
+    if not texto_val or texto_val == VALOR_NO_IDENTIFICADO:
+        return "No identificado"
+    return f"{texto_moneda} {texto_val}"
+
+
+def extraer_periodo_y_fecha(registro: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Extrae ('YYYY-MM', 'YYYY-MM-DD') a partir de 'fecha_emision' (DD/MM/YYYY o YYYY-MM-DD)
+    o usa como respaldo 'created_at' / 'fecha_carga'.
+    """
+    fecha_em = str(registro.get("fecha_emision", "") or "").strip()
+    formatos_comunes = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%y", "%d-%m-%y", "%Y/%m/%d"]
+    for fmt in formatos_comunes:
+        try:
+            dt = datetime.strptime(fecha_em, fmt)
+            return dt.strftime("%Y-%m"), dt.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+
+    # Intentar extraer patrón DD/MM/YYYY dentro del texto
+    match = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", fecha_em)
+    if match:
+        dia, mes, anio = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        if anio < 100:
+            anio += 2000
+        try:
+            dt = datetime(anio, mes, dia)
+            return dt.strftime("%Y-%m"), dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # Respaldo con fecha de guardado en nube o sesión local
+    respaldo = str(registro.get("created_at") or registro.get("fecha_carga") or "").strip()
+    if respaldo:
+        try:
+            dt = datetime.fromisoformat(respaldo.replace("Z", "+00:00"))
+            return dt.strftime("%Y-%m"), dt.strftime("%Y-%m-%d")
+        except Exception:
+            try:
+                dt = datetime.strptime(respaldo[:10], "%Y-%m-%d")
+                return dt.strftime("%Y-%m"), dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+    hoy = datetime.now()
+    return hoy.strftime("%Y-%m"), hoy.strftime("%Y-%m-%d")
+
+
+def preparar_dataframe_analitica(registros: List[Dict[str, Any]]) -> pd.DataFrame:
+    """
+    Transforma la lista de comprobantes en un DataFrame de Pandas enriquecido
+    con columnas numéricas ('importe_total_num', 'importe_neto_num', 'iva_num')
+    y temporales ('periodo_mensual', 'fecha_iso') listas para graficar.
+    """
+    if not registros:
+        return pd.DataFrame()
+
+    filas_procesadas = []
+    for reg in registros:
+        periodo_mes, fecha_iso = extraer_periodo_y_fecha(reg)
+        emisor_limpio = str(reg.get("emisor", VALOR_NO_IDENTIFICADO) or VALOR_NO_IDENTIFICADO).strip()
+        if not emisor_limpio or emisor_limpio == VALOR_NO_IDENTIFICADO:
+            emisor_limpio = "Proveedor sin especificar"
+
+        tipo_limpio = str(reg.get("tipo_documento", VALOR_NO_IDENTIFICADO) or VALOR_NO_IDENTIFICADO).strip()
+        if not tipo_limpio or tipo_limpio == VALOR_NO_IDENTIFICADO:
+            tipo_limpio = "Otro Comprobante"
+
+        filas_procesadas.append(
+            {
+                "periodo_mensual": periodo_mes,
+                "fecha_iso": fecha_iso,
+                "emisor": emisor_limpio,
+                "tipo_documento": tipo_limpio,
+                "cuit": str(reg.get("cuit", VALOR_NO_IDENTIFICADO)),
+                "numero_comprobante": str(reg.get("numero_comprobante", VALOR_NO_IDENTIFICADO)),
+                "importe_neto_num": convertir_monto_a_float(reg.get("importe_neto")),
+                "iva_num": convertir_monto_a_float(reg.get("impuestos_iva")),
+                "importe_total_num": convertir_monto_a_float(reg.get("importe_total")),
+            }
+        )
+
+    return pd.DataFrame(filas_procesadas)
 
 
 # ==============================================================================
@@ -1903,10 +2067,11 @@ def main() -> None:
     # --------------------------------------------------------------------------
     # PESTAÑAS PRINCIPALES ESTILO SEGMENTED CONTROL SAAS
     # --------------------------------------------------------------------------
-    tab_lector, tab_historial, tab_evaluacion = st.tabs(
+    tab_lector, tab_historial, tab_analitica, tab_evaluacion = st.tabs(
         [
             "⚡ Escáner e Indexación IA",
             "🗂️ Repositorio de Comprobantes",
+            "📈 Análisis de Gastos y Métricas",
             "📊 Auditoría de Exactitud (TFI)",
         ]
     )
@@ -1965,98 +2130,148 @@ def main() -> None:
                     archivo_imagen = st.camera_input("Enfocá el comprobante con buena iluminación:")
 
                 if archivo_imagen is not None:
-                    bytes_img = archivo_imagen.getvalue()
-                    st.session_state["ultimo_archivo_bytes"] = bytes_img
-                    st.session_state["ultimo_archivo_nombre"] = getattr(archivo_imagen, "name", "captura_camara.png")
-                    st.session_state["ultimo_archivo_mime"] = getattr(archivo_imagen, "type", "image/png") or "image/png"
+                    imagen_valida = False
+                    imagen_original = None
+                    imagen_enderezada = None
+                    imagen_optimizada = None
+                    recorte_exitoso = False
 
-                    imagen_original = ImageOps.exif_transpose(Image.open(io.BytesIO(bytes_img))).convert("RGB")
-
-                    if usar_recorte_camscanner:
-                        imagen_enderezada, recorte_exitoso = escanear_documento_con_estado(bytes_img)
-                    else:
-                        imagen_enderezada, recorte_exitoso = imagen_original, False
-
-                    imagen_optimizada = (
-                        optimizar_para_tesseract(imagen_enderezada)
-                        if usar_filtro_escaner
-                        else imagen_enderezada
-                    )
-
-                    if usar_recorte_camscanner:
-                        if recorte_exitoso:
-                            st.caption("📐 **CamScanner OpenCV:** 4 esquinas detectadas — fondo recortado y perspectiva enderezada (`warpPerspective`).")
+                    # Manejo de errores amigable al leer y preprocesar la imagen
+                    try:
+                        bytes_img = archivo_imagen.getvalue()
+                        if not bytes_img or len(bytes_img) < 100:
+                            st.error(
+                                "⚠️ El archivo subido está vacío o incompleto. "
+                                "Por favor, seleccioná una imagen válida en formato JPG, PNG o WEBP."
+                            )
                         else:
-                            st.caption("ℹ️ **CamScanner OpenCV:** No se detectaron 4 bordes con contraste suficiente; se conserva el encuadre original sin errores.")
-
-                    col_antes, col_despues = st.columns(2)
-                    with col_antes:
-                        st.image(
-                            imagen_original,
-                            caption="Antes (Foto Original)",
-                            use_container_width=True,
-                        )
-                    with col_despues:
-                        st.image(
-                            imagen_enderezada,
-                            caption=(
-                                "Después (Recortada y Enderezada por OpenCV)"
-                                if recorte_exitoso
-                                else "Después (Encuadre Original Conservado)"
-                            ),
-                            use_container_width=True,
+                            imagen_original = ImageOps.exif_transpose(
+                                Image.open(io.BytesIO(bytes_img))
+                            ).convert("RGB")
+                            st.session_state["ultimo_archivo_bytes"] = bytes_img
+                            st.session_state["ultimo_archivo_nombre"] = getattr(
+                                archivo_imagen, "name", "captura_camara.png"
+                            )
+                            st.session_state["ultimo_archivo_mime"] = (
+                                getattr(archivo_imagen, "type", "image/png") or "image/png"
+                            )
+                            imagen_valida = True
+                    except Exception:
+                        st.error(
+                            "❌ No pudimos abrir este archivo. Asegurate de subir una foto válida "
+                            "en formato **JPG, PNG o WEBP** que no esté dañada."
                         )
 
-                    if usar_filtro_escaner:
-                        with st.expander("🔍 Ver imagen binarizada que recibe Tesseract OCR", expanded=False):
+                    if imagen_valida and imagen_original is not None:
+                        # Control preventivo de nitidez (foto borrosa o fuera de foco)
+                        puntaje_nitidez = calcular_nitidez_imagen(imagen_original)
+                        if puntaje_nitidez < 45.0:
+                            st.warning(
+                                "⚠️ **Aviso de calidad:** La foto parece estar un poco borrosa o fuera de foco. "
+                                "Si algún dato no se detecta bien, te sugerimos tomar la foto con más luz y buen enfoque."
+                            )
+
+                        try:
+                            if usar_recorte_camscanner:
+                                imagen_enderezada, recorte_exitoso = escanear_documento_con_estado(bytes_img)
+                            else:
+                                imagen_enderezada, recorte_exitoso = imagen_original, False
+
+                            imagen_optimizada = (
+                                optimizar_para_tesseract(imagen_enderezada)
+                                if usar_filtro_escaner
+                                else imagen_enderezada
+                            )
+                        except Exception:
+                            st.warning(
+                                "ℹ️ No se pudo aplicar el filtro avanzado de imagen; "
+                                "se utilizará la foto original para la lectura."
+                            )
+                            imagen_enderezada = imagen_original
+                            imagen_optimizada = imagen_original
+                            recorte_exitoso = False
+
+                        if usar_recorte_camscanner:
+                            if recorte_exitoso:
+                                st.caption("📐 **CamScanner OpenCV:** 4 esquinas detectadas — fondo recortado y perspectiva enderezada (`warpPerspective`).")
+                            else:
+                                st.caption("ℹ️ **CamScanner OpenCV:** No se detectaron 4 bordes con contraste suficiente; se conserva el encuadre original sin errores.")
+
+                        col_antes, col_despues = st.columns(2)
+                        with col_antes:
                             st.image(
-                                imagen_optimizada,
-                                caption="Salida de optimizar_para_tesseract() lista para OCR",
+                                imagen_original,
+                                caption="Antes (Foto Original)",
+                                use_container_width=True,
+                            )
+                        with col_despues:
+                            st.image(
+                                imagen_enderezada,
+                                caption=(
+                                    "Después (Recortada y Enderezada por OpenCV)"
+                                    if recorte_exitoso
+                                    else "Después (Encuadre Original Conservado)"
+                                ),
                                 use_container_width=True,
                             )
 
-                    if st.button("✨ Escanear y Extraer Datos con IA", type="primary", use_container_width=True):
-                        with st.spinner("Leyendo documento con Tesseract OCR (--oem 3 --psm 6)..."):
-                            texto_detectado, alerta_ocr = ejecutar_ocr(imagen_optimizada, idioma="spa")
-                            st.session_state["texto_ocr"] = texto_detectado
+                        if usar_filtro_escaner:
+                            with st.expander("🔍 Ver imagen binarizada que recibe Tesseract OCR", expanded=False):
+                                st.image(
+                                    imagen_optimizada,
+                                    caption="Salida de optimizar_para_tesseract() lista para OCR",
+                                    use_container_width=True,
+                                )
 
-                        if alerta_ocr:
-                            st.warning(alerta_ocr)
+                        if st.button("✨ Escanear y Extraer Datos con IA", type="primary", use_container_width=True):
+                            try:
+                                with st.spinner("Procesando factura..."):
+                                    texto_detectado, alerta_ocr = ejecutar_ocr(imagen_optimizada, idioma="spa")
+                                    st.session_state["texto_ocr"] = texto_detectado
 
-                        if not texto_detectado or len(texto_detectado.strip()) < 10:
-                            st.error(
-                                "⚠️ La imagen contiene muy poco texto legible. "
-                                "Probá con una foto más nítida o alternando el Filtro Escáner."
-                            )
-                        else:
-                            with st.spinner("Interpretando estructura contable con IA..."):
-                                error_ia = None
-                                if modo_ia.startswith("1."):
-                                    datos_ext, error_ia = extraer_con_ollama_local(
-                                        texto_detectado,
-                                        modelo=modelo_seleccionado,
-                                        url_base=url_ollama,
-                                    )
-                                elif modo_ia.startswith("2."):
-                                    datos_ext, error_ia = extraer_con_api_nube(
-                                        texto_detectado,
-                                        api_key=api_key_nube,
-                                        modelo=modelo_seleccionado,
-                                        endpoint_url=endpoint_nube,
-                                    )
-                                else:
-                                    datos_ext = extraer_con_reglas_regex(texto_detectado)
+                                    if alerta_ocr:
+                                        st.warning(alerta_ocr)
 
-                                if error_ia:
-                                    st.warning(
-                                        f"{error_ia}\nSe aplicó la extracción automática por plantillas Regex."
-                                    )
-                                    datos_ext = extraer_con_reglas_regex(texto_detectado)
-                                elif aplicar_hibrido_regex:
-                                    datos_ext = aplicar_refuerzo_regex(datos_ext, texto_detectado)
+                                    if not texto_detectado or len(texto_detectado.strip()) < 10:
+                                        st.warning(
+                                            "⚠️ No logramos detectar texto suficiente en la imagen. "
+                                            "Puede que la foto esté borrosa, muy oscura o demasiado lejos. "
+                                            "Intentá acercar la cámara o desactivar/activar el Filtro Escáner."
+                                        )
+                                    else:
+                                        error_ia = None
+                                        if modo_ia.startswith("1."):
+                                            datos_ext, error_ia = extraer_con_ollama_local(
+                                                texto_detectado,
+                                                modelo=modelo_seleccionado,
+                                                url_base=url_ollama,
+                                            )
+                                        elif modo_ia.startswith("2."):
+                                            datos_ext, error_ia = extraer_con_api_nube(
+                                                texto_detectado,
+                                                api_key=api_key_nube,
+                                                modelo=modelo_seleccionado,
+                                                endpoint_url=endpoint_nube,
+                                            )
+                                        else:
+                                            datos_ext = extraer_con_reglas_regex(texto_detectado)
 
-                                st.session_state["datos_actuales"] = datos_ext
-                                st.success("✅ Comprobante indexado. Validá los datos en la bandeja derecha.")
+                                        if error_ia:
+                                            st.warning(
+                                                "ℹ️ El servicio de IA en la nube demoró o devolvió un aviso; "
+                                                "se aplicó automáticamente la extracción de respaldo por reglas (Regex)."
+                                            )
+                                            datos_ext = extraer_con_reglas_regex(texto_detectado)
+                                        elif aplicar_hibrido_regex:
+                                            datos_ext = aplicar_refuerzo_regex(datos_ext, texto_detectado)
+
+                                        st.session_state["datos_actuales"] = datos_ext
+                                        st.success("✅ Comprobante procesado con éxito. Revisá los montos y datos en el panel derecho.")
+                            except Exception:
+                                st.error(
+                                    "❌ Ocurrió un inconveniente inesperado al analizar la factura. "
+                                    "Por favor, intentá nuevamente con una imagen más clara."
+                                )
 
         with col_resultados:
             with st.container(border=True):
@@ -2084,22 +2299,52 @@ def main() -> None:
                         <span class="captia-card-title">2. Bandeja de Validación Contable</span>
                         {chip_html}
                     </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # Segmentación visual: métricas numéricas principales con st.metric
+                moneda_act = datos_act.get("moneda", "$")
+                col_met1, col_met2, col_met3 = st.columns(3)
+                with col_met1:
+                    st.metric(
+                        label="💰 Total de la Factura",
+                        value=formatear_importe_metrica(datos_act.get("importe_total"), moneda_act),
+                        delta=(
+                            datos_act.get("tipo_documento")
+                            if datos_act.get("tipo_documento", VALOR_NO_IDENTIFICADO) != VALOR_NO_IDENTIFICADO
+                            else None
+                        ),
+                    )
+                with col_met2:
+                    st.metric(
+                        label="💵 Importe Neto",
+                        value=formatear_importe_metrica(datos_act.get("importe_neto"), moneda_act),
+                    )
+                with col_met3:
+                    st.metric(
+                        label="🧾 Impuestos / IVA",
+                        value=formatear_importe_metrica(datos_act.get("impuestos_iva"), moneda_act),
+                    )
+
+                st.markdown(
+                    f"""
                     <div class="captia-kpi-grid">
                         <div class="captia-kpi-box">
-                            <div class="captia-kpi-label">Comprobante</div>
-                            <div class="captia-kpi-val">{datos_act.get("tipo_documento", VALOR_NO_IDENTIFICADO)}</div>
+                            <div class="captia-kpi-label">Emisor / Proveedor</div>
+                            <div class="captia-kpi-val">{datos_act.get("emisor", VALOR_NO_IDENTIFICADO)}</div>
                         </div>
                         <div class="captia-kpi-box">
                             <div class="captia-kpi-label">CUIT Emisor</div>
                             <div class="captia-kpi-val">{datos_act.get("cuit", VALOR_NO_IDENTIFICADO)}</div>
                         </div>
                         <div class="captia-kpi-box">
-                            <div class="captia-kpi-label">Fecha</div>
+                            <div class="captia-kpi-label">Fecha Emisión</div>
                             <div class="captia-kpi-val">{datos_act.get("fecha_emision", VALOR_NO_IDENTIFICADO)}</div>
                         </div>
                         <div class="captia-kpi-box">
-                            <div class="captia-kpi-label">Importe Total</div>
-                            <div class="captia-kpi-val">{datos_act.get("moneda", "") if datos_act.get("moneda") != VALOR_NO_IDENTIFICADO else ""} {datos_act.get("importe_total", VALOR_NO_IDENTIFICADO)}</div>
+                            <div class="captia-kpi-label">N° Comprobante</div>
+                            <div class="captia-kpi-val">{datos_act.get("numero_comprobante", VALOR_NO_IDENTIFICADO)}</div>
                         </div>
                     </div>
                     """,
@@ -2147,13 +2392,19 @@ def main() -> None:
                 }
                 st.session_state["datos_actuales"] = datos_revisados
 
-                with st.expander("📝 Inspeccionar texto plano leído por OCR", expanded=False):
-                    texto_editable_ocr = st.text_area(
-                        "Salida cruda de Tesseract (--oem 3 --psm 6):",
-                        value=st.session_state["texto_ocr"],
-                        height=140,
-                    )
-                    st.session_state["texto_ocr"] = texto_editable_ocr
+                # Segmentación con st.expander para ocultar datos secundarios, JSON crudo y texto OCR
+                with st.expander("🗂️ Ver JSON crudo estructurado y datos técnicos del OCR", expanded=False):
+                    sub_tab_json, sub_tab_ocr = st.tabs(["📄 JSON Estructurado (IA)", "📝 Texto Crudo (Tesseract OCR)"])
+                    with sub_tab_json:
+                        st.caption("Estructura JSON normalizada lista para almacenar o exportar:")
+                        st.json(datos_revisados)
+                    with sub_tab_ocr:
+                        texto_editable_ocr = st.text_area(
+                            "Salida cruda de Tesseract (--oem 3 --psm 6):",
+                            value=st.session_state["texto_ocr"],
+                            height=140,
+                        )
+                        st.session_state["texto_ocr"] = texto_editable_ocr
 
                 col_btn1, col_btn2, col_btn3 = st.columns(3)
 
@@ -2504,7 +2755,211 @@ def main() -> None:
                                 st.rerun()
 
     # ==========================================================================
-    # PESTAÑA 3: EVALUACIÓN DE EXACTITUD CONTRA TRANSCRIPCIÓN DE REFERENCIA
+    # PESTAÑA 3: ANÁLISIS DE DATOS INTEGRADO (MÉTRICAS Y GRÁFICOS PANDAS)
+    # ==========================================================================
+    with tab_analitica:
+        with st.container(border=True):
+            usuario_sesion = st.session_state.get("usuario_supabase")
+            fuente_etiqueta = "Modo Demo Local"
+            registros_analitica: List[Dict[str, Any]] = []
+
+            if usuario_sesion and cliente_supabase is not None:
+                fuente_etiqueta = f"Supabase Cloud ({usuario_sesion['email']})"
+                registros_nube_an, err_an = consultar_facturas_usuario_supabase(
+                    cliente_supabase, usuario_sesion["id"]
+                )
+                if not err_an and registros_nube_an:
+                    registros_analitica = registros_nube_an
+            else:
+                registros_analitica = list(st.session_state.get("historial_comprobantes", []))
+
+            st.markdown(
+                f"""
+                <div class="captia-card-header">
+                    <span class="captia-card-title">📈 Análisis de Gastos y Métricas Financieras</span>
+                    <span class="captia-chip captia-chip-indigo">📊 Fuente: {fuente_etiqueta}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            usar_datos_demo = False
+            if not registros_analitica:
+                st.info(
+                    "ℹ️ Aún no tenés comprobantes guardados en el historial para graficar. "
+                    "Podés activar la vista previa de demostración abajo o aprobar facturas en la Pestaña 1."
+                )
+                usar_datos_demo = st.toggle(
+                    "🧪 Previsualizar tablero con lote de facturas de ejemplo (Modo Demo)",
+                    value=True,
+                )
+
+            if usar_datos_demo and not registros_analitica:
+                registros_analitica = [
+                    {
+                        "fecha_emision": "05/07/2026",
+                        "emisor": "Supermercado Mayorista Norte",
+                        "tipo_documento": "FACTURA A",
+                        "importe_neto": "42500.00",
+                        "impuestos_iva": "8925.00",
+                        "importe_total": "51425.00",
+                    },
+                    {
+                        "fecha_emision": "18/07/2026",
+                        "emisor": "Energía Eléctrica EJESA",
+                        "tipo_documento": "FACTURA B",
+                        "importe_neto": "19800.00",
+                        "impuestos_iva": "4158.00",
+                        "importe_total": "23958.00",
+                    },
+                    {
+                        "fecha_emision": "04/08/2026",
+                        "emisor": "Farmacia Norte Jujuy",
+                        "tipo_documento": "TICKET",
+                        "importe_neto": "18948.87",
+                        "impuestos_iva": "0.00",
+                        "importe_total": "18948.87",
+                    },
+                    {
+                        "fecha_emision": "21/08/2026",
+                        "emisor": "Supermercado Mayorista Norte",
+                        "tipo_documento": "FACTURA A",
+                        "importe_neto": "54000.00",
+                        "impuestos_iva": "11340.00",
+                        "importe_total": "65340.00",
+                    },
+                    {
+                        "fecha_emision": "10/09/2026",
+                        "emisor": "Librería e Insumos Jujuy",
+                        "tipo_documento": "FACTURA C",
+                        "importe_neto": "31200.00",
+                        "impuestos_iva": "0.00",
+                        "importe_total": "31200.00",
+                    },
+                    {
+                        "fecha_emision": "19/10/2026",
+                        "emisor": "Farmacia Norte Jujuy",
+                        "tipo_documento": "TICKET",
+                        "importe_neto": "24600.50",
+                        "impuestos_iva": "0.00",
+                        "importe_total": "24600.50",
+                    },
+                    {
+                        "fecha_emision": "28/10/2026",
+                        "emisor": "Energía Eléctrica EJESA",
+                        "tipo_documento": "FACTURA B",
+                        "importe_neto": "26400.00",
+                        "impuestos_iva": "5544.00",
+                        "importe_total": "31944.00",
+                    },
+                ]
+
+            df_an = preparar_dataframe_analitica(registros_analitica)
+
+            if not df_an.empty:
+                gasto_total = float(df_an["importe_total_num"].sum())
+                iva_total = float(df_an["iva_num"].sum())
+                cantidad_comp = len(df_an)
+                ticket_promedio = gasto_total / cantidad_comp if cantidad_comp > 0 else 0.0
+
+                df_por_proveedor = (
+                    df_an.groupby("emisor", as_index=False)
+                    .agg(
+                        Comprobantes=("importe_total_num", "count"),
+                        Importe_Neto=("importe_neto_num", "sum"),
+                        IVA_Total=("iva_num", "sum"),
+                        Total_Facturado=("importe_total_num", "sum"),
+                    )
+                    .sort_values(by="Total_Facturado", ascending=False)
+                )
+
+                proveedor_top = (
+                    str(df_por_proveedor.iloc[0]["emisor"])
+                    if not df_por_proveedor.empty
+                    else "Sin datos"
+                )
+                monto_top = (
+                    float(df_por_proveedor.iloc[0]["Total_Facturado"])
+                    if not df_por_proveedor.empty
+                    else 0.0
+                )
+
+                # Fila de KPIs destacados con st.metric
+                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+                with kpi1:
+                    st.metric(
+                        label="💰 Gasto Total Acumulado",
+                        value=f"$ {gasto_total:,.2f}",
+                        delta=f"IVA: $ {iva_total:,.2f}",
+                    )
+                with kpi2:
+                    st.metric(
+                        label="🧾 Promedio por Comprobante",
+                        value=f"$ {ticket_promedio:,.2f}",
+                    )
+                with kpi3:
+                    st.metric(
+                        label="📄 Facturas Procesadas",
+                        value=str(cantidad_comp),
+                    )
+                with kpi4:
+                    st.metric(
+                        label="🏢 Principal Proveedor",
+                        value=proveedor_top[:22] + ("…" if len(proveedor_top) > 22 else ""),
+                        delta=f"$ {monto_top:,.2f}",
+                    )
+
+                st.markdown("---")
+
+                # Gráficos nativos de Streamlit con Pandas: st.line_chart y st.bar_chart
+                col_graf_linea, col_graf_barras = st.columns(2, gap="large")
+
+                with col_graf_linea:
+                    st.markdown("##### 📈 Evolución de Gasto Mensual y Acumulado (`st.line_chart`)")
+                    df_mensual = (
+                        df_an.groupby("periodo_mensual", as_index=True)["importe_total_num"]
+                        .sum()
+                        .sort_index()
+                        .to_frame(name="Gasto Mensual ($)")
+                    )
+                    df_mensual["Gasto Acumulado ($)"] = df_mensual["Gasto Mensual ($)"].cumsum()
+                    st.line_chart(df_mensual, use_container_width=True)
+
+                with col_graf_barras:
+                    st.markdown("##### 📊 Montos Totales Agrupados por Proveedor (`st.bar_chart`)")
+                    df_grafico_prov = df_por_proveedor.set_index("emisor")[["Total_Facturado"]].rename(
+                        columns={"Total_Facturado": "Total Facturado ($)"}
+                    )
+                    st.bar_chart(df_grafico_prov, use_container_width=True)
+
+                with st.expander("🗂️ Ver desglose por Tipo de Comprobante y Tabla Resumen por Proveedor", expanded=False):
+                    col_tipo_g, col_tabla_g = st.columns([1, 1.4], gap="large")
+                    with col_tipo_g:
+                        st.markdown("**Distribución por Tipo de Comprobante**")
+                        df_por_tipo = (
+                            df_an.groupby("tipo_documento")["importe_total_num"]
+                            .sum()
+                            .to_frame(name="Importe Total ($)")
+                        )
+                        st.bar_chart(df_por_tipo, use_container_width=True)
+                    with col_tabla_g:
+                        st.markdown("**Resumen Contable Agrupado por Proveedor**")
+                        st.dataframe(
+                            df_por_proveedor.rename(
+                                columns={
+                                    "emisor": "Proveedor / Emisor",
+                                    "Comprobantes": "Cant.",
+                                    "Importe_Neto": "Neto ($)",
+                                    "IVA_Total": "IVA ($)",
+                                    "Total_Facturado": "Total ($)",
+                                }
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+    # ==========================================================================
+    # PESTAÑA 4: EVALUACIÓN DE EXACTITUD CONTRA TRANSCRIPCIÓN DE REFERENCIA
     # ==========================================================================
     with tab_evaluacion:
         with st.container(border=True):
