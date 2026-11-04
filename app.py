@@ -107,6 +107,142 @@ def configurar_ruta_tesseract() -> Optional[str]:
     return None
 
 
+def ordenar_puntos(pts: np.ndarray) -> np.ndarray:
+    """
+    Ordena las 4 esquinas detectadas del documento en el orden estricto:
+    [0] arriba-izquierda (top-left)
+    [1] arriba-derecha (top-right)
+    [2] abajo-derecha (bottom-right)
+    [3] abajo-izquierda (bottom-left)
+    """
+    rect = np.zeros((4, 2), dtype="float32")
+
+    # Arriba-izquierda tiene la suma (x + y) más pequeña; abajo-derecha la más grande
+    suma = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(suma)]
+    rect[2] = pts[np.argmax(suma)]
+
+    # Arriba-derecha tiene la diferencia (y - x) más pequeña; abajo-izquierda la más grande
+    dif = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(dif)]
+    rect[3] = pts[np.argmax(dif)]
+
+    return rect
+
+
+def escanear_documento_con_estado(imagen_bytes: bytes) -> Tuple[Image.Image, bool]:
+    """
+    Ejecuta el pipeline clásico de visión por computadora estilo CamScanner:
+    1. Redimensionado temporal para acelerar procesamiento.
+    2. Escala de grises + Gaussian Blur (5x5).
+    3. Detección de bordes con Canny Edge Detection + dilatación suave.
+    4. Búsqueda de contornos (cv2.findContours) ordenados por área descendente.
+    5. Aproximación poligonal (cv2.approxPolyDP) verificando exactamente 4 vértices.
+    6. Matriz de transformación (cv2.getPerspectiveTransform) y warpPerspective (bird's-eye view)
+       sobre la imagen original en alta resolución.
+    7. Manejo de errores: si no detecta 4 esquinas claras, devuelve la imagen original intacta.
+    """
+    try:
+        pil_orig = ImageOps.exif_transpose(Image.open(io.BytesIO(imagen_bytes))).convert("RGB")
+    except Exception:
+        pil_orig = Image.open(io.BytesIO(imagen_bytes)).convert("RGB")
+
+    if not OPENCV_DISPONIBLE or cv2 is None:
+        return pil_orig, False
+
+    try:
+        orig_np = np.array(pil_orig)
+        alto_orig, ancho_orig = orig_np.shape[:2]
+
+        # 1. Redimensionar temporalmente para acelerar el procesamiento
+        altura_proc = 650.0
+        ratio = alto_orig / altura_proc
+        ancho_proc = max(1, int(ancho_orig / ratio))
+        img_redim = cv2.resize(orig_np, (ancho_proc, int(altura_proc)), interpolation=cv2.INTER_AREA)
+
+        # 2. Convertir a escala de grises y aplicar Gaussian Blur
+        gris = cv2.cvtColor(img_redim, cv2.COLOR_RGB2GRAY)
+        desenfocada = cv2.GaussianBlur(gris, (5, 5), 0)
+
+        # 3. Aplicar detección de bordes (Canny Edge Detection) y cierre morfológico suave
+        bordes = cv2.Canny(desenfocada, 75, 200)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        bordes = cv2.dilate(bordes, kernel, iterations=1)
+
+        # 4. Buscar contornos y ordenar de mayor a menor área
+        contornos_info = cv2.findContours(bordes.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        contornos = contornos_info[0] if len(contornos_info) == 2 else contornos_info[1]
+        contornos = sorted(contornos, key=cv2.contourArea, reverse=True)[:5]
+
+        area_total_proc = float(ancho_proc * int(altura_proc))
+        contorno_pantalla = None
+
+        # 5. Aproximar el polígono para verificar si tiene exactamente 4 vértices
+        for c in contornos:
+            area_c = cv2.contourArea(c)
+            # Evitar recortar recuadros diminutos internos (exigir al menos 15% del área de la foto)
+            if area_c < (0.15 * area_total_proc):
+                continue
+
+            perimetro = cv2.arcLength(c, True)
+            aprox = cv2.approxPolyDP(c, 0.02 * perimetro, True)
+
+            if len(aprox) == 4:
+                contorno_pantalla = aprox
+                break
+
+        # Manejo de fallback si no se detectan 4 esquinas claras
+        if contorno_pantalla is None:
+            return pil_orig, False
+
+        # 6. Calcular matriz de transformación y aplicar warpPerspective sobre la imagen de alta resolución
+        pts_alta_res = contorno_pantalla.reshape(4, 2).astype("float32") * ratio
+        rect = ordenar_puntos(pts_alta_res)
+        (tl, tr, br, bl) = rect
+
+        # Calcular el ancho máximo del nuevo documento enderezado
+        ancho_abajo = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+        ancho_arriba = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+        max_ancho = max(int(ancho_abajo), int(ancho_arriba))
+
+        # Calcular el alto máximo del nuevo documento enderezado
+        alto_derecha = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+        alto_izquierda = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+        max_alto = max(int(alto_derecha), int(alto_izquierda))
+
+        if max_ancho < 100 or max_alto < 100:
+            return pil_orig, False
+
+        destino = np.array(
+            [
+                [0, 0],
+                [max_ancho - 1, 0],
+                [max_ancho - 1, max_alto - 1],
+                [0, max_alto - 1],
+            ],
+            dtype="float32",
+        )
+
+        matriz_m = cv2.getPerspectiveTransform(rect, destino)
+        escaneo_plano = cv2.warpPerspective(orig_np, matriz_m, (max_ancho, max_alto))
+
+        return Image.fromarray(escaneo_plano), True
+
+    except Exception:
+        # Si ocurre cualquier excepción inesperada, retornar la imagen original sin romper la app
+        return pil_orig, False
+
+
+def escanear_documento(imagen_bytes: bytes) -> Image.Image:
+    """
+    Función principal de escaneo estilo CamScanner: recibe los bytes de la imagen
+    y devuelve la imagen recortada y enderezada (bird's-eye view), o la imagen original
+    si no se detectan 4 esquinas claras.
+    """
+    imagen_resultado, _ = escanear_documento_con_estado(imagen_bytes)
+    return imagen_resultado
+
+
 def optimizar_para_tesseract(pil_image: Image.Image) -> Image.Image:
     """
     Optimizador de imagen especializado para Tesseract OCR (Filtro Escáner con OpenCV):
@@ -1793,14 +1929,25 @@ def main() -> None:
                     unsafe_allow_html=True,
                 )
 
-                usar_filtro_escaner = st.toggle(
-                    "Mejorar calidad de foto para OCR (Filtro Escáner OpenCV)",
-                    value=True,
-                    help=(
-                        "Ejecuta optimizar_para_tesseract(pil_image) con OpenCV: escala de grises, "
-                        "upscaling cúbico, filtro bilateral y binarización adaptativa (blockSize=31, C=15)."
-                    ),
-                )
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    usar_recorte_camscanner = st.toggle(
+                        "Recorte y perspectiva (CamScanner)",
+                        value=True,
+                        help=(
+                            "Ejecuta escanear_documento(imagen_bytes) con OpenCV: Canny Edge, "
+                            "contorno de 4 vértices y warpPerspective (bird's-eye view)."
+                        ),
+                    )
+                with col_t2:
+                    usar_filtro_escaner = st.toggle(
+                        "Filtro Escáner Binarizado (OCR)",
+                        value=True,
+                        help=(
+                            "Ejecuta optimizar_para_tesseract(pil_image) con OpenCV: escala de grises, "
+                            "upscaling cúbico, filtro bilateral y binarización adaptativa (blockSize=31, C=15)."
+                        ),
+                    )
 
                 metodo_entrada = st.radio(
                     "Método de recepción:",
@@ -1823,21 +1970,48 @@ def main() -> None:
                     st.session_state["ultimo_archivo_nombre"] = getattr(archivo_imagen, "name", "captura_camara.png")
                     st.session_state["ultimo_archivo_mime"] = getattr(archivo_imagen, "type", "image/png") or "image/png"
 
-                    imagen_original = Image.open(io.BytesIO(bytes_img))
+                    imagen_original = ImageOps.exif_transpose(Image.open(io.BytesIO(bytes_img))).convert("RGB")
+
+                    if usar_recorte_camscanner:
+                        imagen_enderezada, recorte_exitoso = escanear_documento_con_estado(bytes_img)
+                    else:
+                        imagen_enderezada, recorte_exitoso = imagen_original, False
+
                     imagen_optimizada = (
-                        optimizar_para_tesseract(imagen_original)
+                        optimizar_para_tesseract(imagen_enderezada)
                         if usar_filtro_escaner
-                        else imagen_original.convert("RGB")
+                        else imagen_enderezada
                     )
 
-                    with st.expander("🔍 Vista previa comparativa: Original vs. Filtro Escáner", expanded=True):
-                        col_img_orig, col_img_opt = st.columns(2)
-                        with col_img_orig:
-                            st.image(imagen_original, caption="Documento Original", use_container_width=True)
-                        with col_img_opt:
+                    if usar_recorte_camscanner:
+                        if recorte_exitoso:
+                            st.caption("📐 **CamScanner OpenCV:** 4 esquinas detectadas — fondo recortado y perspectiva enderezada (`warpPerspective`).")
+                        else:
+                            st.caption("ℹ️ **CamScanner OpenCV:** No se detectaron 4 bordes con contraste suficiente; se conserva el encuadre original sin errores.")
+
+                    col_antes, col_despues = st.columns(2)
+                    with col_antes:
+                        st.image(
+                            imagen_original,
+                            caption="Antes (Foto Original)",
+                            use_container_width=True,
+                        )
+                    with col_despues:
+                        st.image(
+                            imagen_enderezada,
+                            caption=(
+                                "Después (Recortada y Enderezada por OpenCV)"
+                                if recorte_exitoso
+                                else "Después (Encuadre Original Conservado)"
+                            ),
+                            use_container_width=True,
+                        )
+
+                    if usar_filtro_escaner:
+                        with st.expander("🔍 Ver imagen binarizada que recibe Tesseract OCR", expanded=False):
                             st.image(
                                 imagen_optimizada,
-                                caption="Optimizada para OCR" if usar_filtro_escaner else "Sin Filtro Escáner",
+                                caption="Salida de optimizar_para_tesseract() lista para OCR",
                                 use_container_width=True,
                             )
 
