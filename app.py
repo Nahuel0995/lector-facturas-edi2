@@ -78,7 +78,7 @@ CAMPOS_COMPROBANTE = {
 
 VALOR_NO_IDENTIFICADO = "No identificado"
 
-PROMPT_SISTEMA = """Eres un asistente especializado en extracción contable de comprobantes, tickets y facturas de Argentina.
+PROMPT_SISTEMA = """Eres un asistente experto en extracción contable de comprobantes, tickets y facturas de Argentina (AFIP/ARCA, distribuidoras, comercios).
 Tu única tarea es analizar el texto extraído por OCR de un comprobante y devolver EXCLUSIVAMENTE un objeto JSON válido con las siguientes 9 claves exactas:
 
 {
@@ -87,16 +87,21 @@ Tu única tarea es analizar el texto extraído por OCR de un comprobante y devol
   "cuit": "CUIT del emisor con formato XX-XXXXXXXX-X o 'No identificado'",
   "fecha_emision": "Fecha en formato DD/MM/AAAA o 'No identificado'",
   "numero_comprobante": "Número de factura o ticket (ej: 0001-00012345) o 'No identificado'",
-  "importe_neto": "Subtotal o importe neto numérico (ej: 12500.50) o 'No identificado'",
-  "impuestos_iva": "Monto de IVA u otros impuestos (ej: 2625.10) o 'No identificado'",
-  "importe_total": "Importe total final numérico (ej: 15125.60) o 'No identificado'",
+  "importe_neto": "Subtotal neto gravado sin impuestos en formato numérico con punto decimal (ej: 29813.34) o 'No identificado'",
+  "impuestos_iva": "Suma total de impuestos discriminados (IVA 21%, IVA 10.5%, Impuesto Interno, Percepciones) en formato numérico con punto decimal (ej: 8853.37 o 6260.80) o 'No identificado'",
+  "importe_total": "Importe total final en formato numérico con punto decimal (ej: 38666.71) o 'No identificado'",
   "moneda": "Moneda identificada (ej: ARS, USD, $) o 'No identificado'"
 }
 
-REGLAS ESTRICTAS:
-1. NO inventes ni supongas ningún dato que no figure en el texto OCR.
-2. Si un campo no aparece o es ilegible, coloca exactamente el texto "No identificado".
-3. Devuelve ÚNICAMENTE el objeto JSON, sin explicaciones ni bloques markdown adicionales.
+REGLAS CONTABLES Y DE TABLAS HORIZONTALES (MUY IMPORTANTE):
+1. TABLAS DE PIE DE FACTURA EN FILAS SEPARADAS: En muchas Facturas A argentinas (ej: Salta Refrescos, Coca-Cola, distribuidoras, AFIP), los encabezados de la tabla ('Subtotal Neto', 'Impuesto Interno', 'IVA 21', 'Percepc. DGR', 'Percepc. Mun', 'TOTAL') aparecen en una línea y sus valores numéricos ('$29.813,34  $2.592,57  $6.260,80  $0,00  $0,00  $38.666,71') aparecen en la línea inmediatamente inferior en el mismo orden de izquierda a derecha:
+   - El PRIMER monto positivo de esa fila de desglose (ej: 29813.34) corresponde a "Subtotal Neto" -> colócalo en "importe_neto".
+   - Los montos intermedios mayores a cero antes del TOTAL (ej: Impuesto Interno 2592.57 + IVA 21 6260.80 = 8853.37, o el IVA 6260.80) corresponden a "impuestos_iva".
+   - Verifica siempre la ecuación contable: importe_neto + impuestos_iva = importe_total (ej: 29813.34 + 2592.57 + 6260.80 = 38666.71).
+2. NO CONFUNDIR 'SUBTOTAL' CON 'TOTAL': Si arriba de la tabla aparece un recuadro 'SUBTOTAL $38.666,71' que tiene exactamente el mismo valor que el 'TOTAL $38.666,71', NO uses ese valor como importe_neto si en la tabla inferior existe el verdadero Subtotal Neto menor (ej: 29813.34).
+3. Convierte los importes argentinos (ej: $29.813,34) a formato decimal estándar con punto (ej: 29813.34).
+4. NO inventes datos que no figuren en el texto. Si un campo no aparece, coloca "No identificado".
+5. Devuelve ÚNICAMENTE el objeto JSON válido, sin explicaciones ni bloques markdown.
 """
 
 
@@ -300,17 +305,17 @@ def optimizar_para_tesseract(pil_image: Image.Image) -> Image.Image:
             interpolation=cv2.INTER_CUBIC,
         )
 
-    # 3. Reducción de ruido preservando la nitidez de los bordes de letras y números
-    filtrado = cv2.bilateralFilter(gris, d=9, sigmaColor=75, sigmaSpace=75)
+    # 3. Reducción de ruido suave preservando trazos finos de números en tablas
+    filtrado = cv2.bilateralFilter(gris, d=5, sigmaColor=45, sigmaSpace=45)
 
-    # 4. Binarización adaptativa para eliminar sombras e iluminación despareja
+    # 4. Binarización adaptativa equilibrada (C=9) para no borrar tipografía delgada
     binarizada = cv2.adaptiveThreshold(
         filtrado,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
         blockSize=31,
-        C=15,
+        C=9,
     )
 
     return Image.fromarray(binarizada)
@@ -401,8 +406,8 @@ def procesar_archivo_pdf(
             else:
                 texto_digital = texto_pag
 
-            # Renderizar la página en alta definición (220 DPI) para OpenCV y Tesseract OCR
-            pix = pagina.get_pixmap(dpi=220, alpha=False)
+            # Renderizar la página en alta definición (260 DPI) para OpenCV y Tesseract OCR
+            pix = pagina.get_pixmap(dpi=260, alpha=False)
             imagen_pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             doc.close()
             return imagen_pil, texto_digital.strip(), total_paginas, None
@@ -1142,10 +1147,169 @@ def extraer_con_api_nube(
         return normalizar_diccionario_extraido({}), f"Error de conexión con API Nube ({modelo}): {exc}"
 
 
+def extraer_montos_contables_ocr(
+    texto_ocr: str, total_conocido: float = 0.0
+) -> Tuple[str, str, str]:
+    """
+    Analiza el texto OCR (incluyendo tablas horizontales de pie de factura como en
+    Facturas A de Salta Refrescos / AFIP donde los encabezados están arriba y los montos abajo)
+    para identificar con precisión contable: (importe_neto, impuestos_iva, importe_total).
+    """
+    patron_monto = re.compile(r"(?<!\d)(\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d{2,7}[.,]\d{2})(?!\d)")
+
+    # 1. Buscar candidato a TOTAL explícito
+    monto_total = total_conocido
+    matches_total = re.findall(
+        r"TOTAL\s*(?:A\s*PAGAR|FINAL|GENERAL)?\s*[:$]?\s*\$?\s*(\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d+[.,]\d{2})",
+        texto_ocr,
+        re.IGNORECASE,
+    )
+    if matches_total and monto_total <= 0:
+        candidatos_t = [convertir_monto_a_float(m) for m in matches_total]
+        candidatos_t = [c for c in candidatos_t if c > 0]
+        if candidatos_t:
+            monto_total = max(candidatos_t)
+
+    # Extraer montos línea por línea (enfocándonos en filas con importes decimales)
+    lineas = texto_ocr.splitlines()
+    filas_montos: List[List[float]] = []
+    todos_montos_positivos: List[float] = []
+
+    for lin in lineas:
+        # Ignorar líneas que sean claramente CUIT o fechas o CAE
+        if re.search(r"\b(CUIT|CAE|VTO|IIBB|ING\.?\s*BRUTOS)\b", lin, re.IGNORECASE):
+            continue
+        encontrados = [convertir_monto_a_float(m) for m in patron_monto.findall(lin)]
+        positivos = [v for v in encontrados if v > 0.0]
+        if positivos:
+            filas_montos.append(positivos)
+            todos_montos_positivos.extend(positivos)
+
+    # Si aún no tenemos monto_total, revisar filas de resumen horizontal (3 o más montos en una línea)
+    if monto_total <= 0 and filas_montos:
+        for fila in reversed(filas_montos):
+            if len(fila) >= 2:
+                posible_max = max(fila)
+                # Verificar si la suma de los anteriores da el último monto de la fila
+                if len(fila) >= 3 and abs(sum(fila[:-1]) - fila[-1]) <= 1.50:
+                    monto_total = fila[-1]
+                    break
+                if posible_max > monto_total:
+                    monto_total = posible_max
+
+    neto_val = 0.0
+    iva_val = 0.0
+
+    # 2. Estrategia A: Fila de tabla horizontal (ej: $29.813,34  $2.592,57  $6.260,80  $0,00  $38.666,71)
+    for fila in reversed(filas_montos):
+        if len(fila) >= 2:
+            ultimo = fila[-1]
+            previos = [x for x in fila[:-1] if x > 0 and abs(x - ultimo) > 0.01]
+            if previos and abs(sum(previos) - ultimo) <= 1.50:
+                if monto_total <= 0 or abs(ultimo - monto_total) <= 1.50:
+                    monto_total = ultimo
+                    neto_val = max(previos)
+                    iva_val = round(monto_total - neto_val, 2)
+                    break
+
+    # 3. Estrategia B: Ecuación contable e identificación por alícuota de IVA (21%, 10.5%, 27%)
+    if (neto_val <= 0 or iva_val <= 0) and todos_montos_positivos:
+        # Tomar los montos de la mitad inferior del comprobante (donde siempre está el pie de factura)
+        mitad = max(0, len(todos_montos_positivos) - 18)
+        candidatos_pie = []
+        for v in todos_montos_positivos[mitad:]:
+            if v not in candidatos_pie:
+                candidatos_pie.append(v)
+
+        if monto_total <= 0 and candidatos_pie:
+            monto_total = max(candidatos_pie)
+
+        menores_al_total = [v for v in candidatos_pie if 0 < v < (monto_total - 0.05)]
+
+        # B.1: Buscar si existe un par (Neto, IVA) donde Neto * 0.21 == IVA (o 10.5% / 27%)
+        for cand_neto in sorted(menores_al_total, reverse=True):
+            if monto_total > 0 and cand_neto < 0.40 * monto_total:
+                continue
+            for tasa in (0.21, 0.105, 0.27):
+                iva_esperado = round(cand_neto * tasa, 2)
+                for cand_iva in menores_al_total:
+                    if cand_iva == cand_neto:
+                        continue
+                    tolerancia = max(0.50, cand_neto * 0.002)
+                    if abs(cand_iva - iva_esperado) <= tolerancia:
+                        neto_val = cand_neto
+                        # Si la suma con otros impuestos da el total, usamos (Total - Neto) como total de impuestos
+                        if monto_total > neto_val:
+                            iva_val = round(monto_total - neto_val, 2)
+                        else:
+                            iva_val = cand_iva
+                        break
+                if neto_val > 0:
+                    break
+            if neto_val > 0:
+                break
+
+        # B.2: Si aún no se halló por tasa IVA, buscar subconjunto de 2 o 3 montos que sumen exactamente el TOTAL
+        if neto_val <= 0 and monto_total > 0 and len(menores_al_total) >= 2:
+            n_elem = len(menores_al_total)
+            for i in range(n_elem):
+                for j in range(i + 1, n_elem):
+                    a, b = menores_al_total[i], menores_al_total[j]
+                    if abs((a + b) - monto_total) <= 1.50:
+                        neto_val = max(a, b)
+                        iva_val = round(monto_total - neto_val, 2)
+                        break
+                    for k in range(j + 1, n_elem):
+                        c = menores_al_total[k]
+                        if abs((a + b + c) - monto_total) <= 1.50:
+                            neto_val = max(a, b, c)
+                            iva_val = round(monto_total - neto_val, 2)
+                            break
+                    if neto_val > 0:
+                        break
+                if neto_val > 0:
+                    break
+
+    # 4. Estrategia C: Etiquetas explícitas en línea ("Subtotal Neto", "Importe Neto", "IVA 21")
+    if neto_val <= 0:
+        match_neto = re.search(
+            r"(?:SUBTOTAL\s*NETO|IMPORTE\s*NETO(?:\s*GRAVADO)?|NETO\s*GRAVADO)\s*[:$]?\s*\$?\s*(\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d+[.,]\d{2})",
+            texto_ocr,
+            re.IGNORECASE,
+        )
+        if match_neto:
+            cand = convertir_monto_a_float(match_neto.group(1))
+            if cand > 0 and (monto_total <= 0 or cand <= monto_total):
+                neto_val = cand
+
+    if iva_val <= 0:
+        matches_imp = re.findall(
+            r"(?:IVA\s*(?:21|10[.,]5|27)?\s*%?|IMPUESTO\s*INTERNO)\s*[:$]?\s*\$?\s*(\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d+[.,]\d{2})",
+            texto_ocr,
+            re.IGNORECASE,
+        )
+        if matches_imp:
+            vals_imp = [convertir_monto_a_float(m) for m in matches_imp]
+            vals_imp = [v for v in vals_imp if 0 < v < (monto_total if monto_total > 0 else 1e12)]
+            if vals_imp:
+                iva_val = round(sum(vals_imp), 2)
+
+    # Completar por diferencia contable si tenemos 2 de los 3 valores
+    if monto_total > 0 and neto_val > 0 and iva_val <= 0 and monto_total > neto_val:
+        iva_val = round(monto_total - neto_val, 2)
+    elif monto_total > 0 and iva_val > 0 and neto_val <= 0 and monto_total > iva_val:
+        neto_val = round(monto_total - iva_val, 2)
+
+    str_neto = f"{neto_val:.2f}" if neto_val > 0 else VALOR_NO_IDENTIFICADO
+    str_iva = f"{iva_val:.2f}" if iva_val > 0 else VALOR_NO_IDENTIFICADO
+    str_total = f"{monto_total:.2f}" if monto_total > 0 else VALOR_NO_IDENTIFICADO
+    return str_neto, str_iva, str_total
+
+
 def extraer_con_reglas_regex(texto_ocr: str) -> Dict[str, str]:
     """
-    Extractor heurístico de respaldo basado en expresiones regulares.
-    También se utiliza como refuerzo post-procesamiento para corregir CUIT y fechas.
+    Extractor heurístico de respaldo basado en expresiones regulares y análisis contable de tablas.
+    También se utiliza como refuerzo post-procesamiento para completar montos, CUIT y fechas.
     """
     datos = {clave: VALOR_NO_IDENTIFICADO for clave in CAMPOS_COMPROBANTE}
 
@@ -1171,13 +1335,10 @@ def extraer_con_reglas_regex(texto_ocr: str) -> Dict[str, str]:
     if match_nro:
         datos["numero_comprobante"] = f"{match_nro.group(1)}-{match_nro.group(2)}"
 
-    match_total = re.search(
-        r"TOTAL\s*(?:A\s*PAGAR)?\s*[:$]?\s*\$?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})|\d+(?:[.,]\d{2}))",
-        texto_ocr,
-        re.IGNORECASE,
-    )
-    if match_total:
-        datos["importe_total"] = match_total.group(1)
+    str_neto, str_iva, str_total = extraer_montos_contables_ocr(texto_ocr)
+    datos["importe_neto"] = str_neto
+    datos["impuestos_iva"] = str_iva
+    datos["importe_total"] = str_total
 
     if re.search(r"\b(USD|U\$S|D[OÓ]LARES)\b", texto_ocr, re.IGNORECASE):
         datos["moneda"] = "USD"
@@ -1189,14 +1350,45 @@ def extraer_con_reglas_regex(texto_ocr: str) -> Dict[str, str]:
 
 def aplicar_refuerzo_regex(datos_ia: Dict[str, str], texto_ocr: str) -> Dict[str, str]:
     """
-    Mejora híbrida: si el LLM omitió el CUIT, la fecha o el número de comprobante
-    pero tienen un patrón exacto en el texto OCR, los completa con Regex.
+    Mejora híbrida: si el LLM omitió el CUIT, la fecha, el número de comprobante
+    o los montos de una tabla horizontal (importe_neto, impuestos_iva, importe_total),
+    los completa y valida matemáticamente con el analizador contable.
     """
-    respaldo = extraer_con_reglas_regex(texto_ocr)
     resultado = dict(datos_ia)
-    for campo_clave in ["cuit", "fecha_emision", "numero_comprobante", "moneda"]:
+    total_ia = convertir_monto_a_float(resultado.get("importe_total"))
+    neto_ocr, iva_ocr, total_ocr = extraer_montos_contables_ocr(texto_ocr, total_conocido=total_ia)
+    respaldo = extraer_con_reglas_regex(texto_ocr)
+
+    for campo_clave in ["cuit", "fecha_emision", "numero_comprobante", "moneda", "tipo_documento"]:
         if resultado.get(campo_clave) == VALOR_NO_IDENTIFICADO and respaldo.get(campo_clave) != VALOR_NO_IDENTIFICADO:
             resultado[campo_clave] = respaldo[campo_clave]
+
+    # Completar o corregir importe_total
+    if total_ia <= 0 and total_ocr != VALOR_NO_IDENTIFICADO:
+        resultado["importe_total"] = total_ocr
+        total_ia = convertir_monto_a_float(total_ocr)
+
+    # Completar o corregir importe_neto (incluyendo si el LLM puso el total como subtotal por error)
+    neto_ia = convertir_monto_a_float(resultado.get("importe_neto"))
+    if (neto_ia <= 0 or (total_ia > 0 and abs(neto_ia - total_ia) < 0.01 and convertir_monto_a_float(neto_ocr) > 0 and convertir_monto_a_float(neto_ocr) < total_ia)):
+        if neto_ocr != VALOR_NO_IDENTIFICADO:
+            resultado["importe_neto"] = neto_ocr
+            neto_ia = convertir_monto_a_float(neto_ocr)
+
+    # Completar o corregir impuestos_iva
+    iva_ia = convertir_monto_a_float(resultado.get("impuestos_iva"))
+    if iva_ia <= 0:
+        if iva_ocr != VALOR_NO_IDENTIFICADO:
+            resultado["impuestos_iva"] = iva_ocr
+        elif total_ia > 0 and neto_ia > 0 and total_ia > neto_ia:
+            resultado["impuestos_iva"] = f"{round(total_ia - neto_ia, 2):.2f}"
+
+    # Si tenemos total e impuestos pero faltó el neto, deducirlo contablemente
+    if convertir_monto_a_float(resultado.get("importe_neto")) <= 0:
+        iva_final = convertir_monto_a_float(resultado.get("impuestos_iva"))
+        if total_ia > 0 and iva_final > 0 and total_ia > iva_final:
+            resultado["importe_neto"] = f"{round(total_ia - iva_final, 2):.2f}"
+
     return resultado
 
 
@@ -1844,7 +2036,34 @@ def aplicar_estilos_saas() -> None:
             background-color: #F8FAFC !important;
             border: 1px solid var(--border-card) !important;
             border-radius: 12px !important;
-            padding: 1.1rem 1.25rem !important;
+            padding: 0.72rem 0.9rem !important;
+        }
+
+        [data-testid="stMetricLabel"],
+        [data-testid="stMetricLabel"] p {
+            font-size: 0.78rem !important;
+            font-weight: 600 !important;
+            color: var(--text-muted) !important;
+            margin-bottom: 0.15rem !important;
+        }
+
+        [data-testid="stMetricValue"],
+        [data-testid="stMetricValue"] > div {
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+            font-size: 1.15rem !important;
+            font-weight: 700 !important;
+            line-height: 1.25 !important;
+            color: var(--text-main) !important;
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            word-break: break-word !important;
+        }
+
+        [data-testid="stMetricDelta"],
+        [data-testid="stMetricDelta"] > div {
+            font-size: 0.74rem !important;
+            font-weight: 600 !important;
         }
         </style>
         """,
@@ -2384,6 +2603,17 @@ def main() -> None:
                             try:
                                 with st.spinner("Procesando factura..."):
                                     texto_ocr_img, alerta_ocr = ejecutar_ocr(imagen_optimizada, idioma="spa")
+
+                                    # Si se usó el filtro binarizado, sumar lectura sobre la imagen sin binarizar
+                                    # para no perder números de trazo fino ni encabezados grises en tablas de facturas
+                                    if usar_filtro_escaner and imagen_enderezada is not None:
+                                        texto_ocr_natural, _ = ejecutar_ocr(imagen_enderezada, idioma="spa")
+                                        if texto_ocr_natural and texto_ocr_natural.strip() != texto_ocr_img.strip():
+                                            texto_ocr_img = (
+                                                f"{texto_ocr_img.strip()}\n\n"
+                                                f"--- LECTURA ESCALA NATURAL (TABLAS Y TRAZOS FINOS) ---\n"
+                                                f"{texto_ocr_natural.strip()}"
+                                            ).strip()
 
                                     if es_archivo_pdf and len(texto_digital_pdf.strip()) >= 20:
                                         # Combinar texto nativo del PDF + texto OCR (por si el logo/emisor está como imagen)
