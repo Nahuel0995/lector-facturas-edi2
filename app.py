@@ -24,7 +24,7 @@ import pandas as pd
 import pytesseract
 import requests
 import streamlit as st
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 try:
     import cv2
@@ -33,6 +33,22 @@ try:
 except ImportError:
     cv2 = None  # type: ignore
     OPENCV_DISPONIBLE = False
+
+try:
+    import fitz  # PyMuPDF para renderizar páginas PDF y extraer texto nativo
+
+    PYMUPDF_DISPONIBLE = True
+except ImportError:
+    fitz = None  # type: ignore
+    PYMUPDF_DISPONIBLE = False
+
+try:
+    from pypdf import PdfReader
+
+    PYPDF_DISPONIBLE = True
+except ImportError:
+    PdfReader = None  # type: ignore
+    PYPDF_DISPONIBLE = False
 
 try:
     from supabase import Client, create_client
@@ -348,6 +364,90 @@ def ejecutar_ocr(imagen: Image.Image, idioma: str = "spa") -> Tuple[str, Optiona
             "",
             "⚠️ El motor de lectura óptica (Tesseract OCR) no está disponible o no pudo procesar este archivo.",
         )
+
+
+def procesar_archivo_pdf(
+    pdf_bytes: bytes, indice_pagina: int = 0
+) -> Tuple[Optional[Image.Image], str, int, Optional[str]]:
+    """
+    Procesa una factura en formato PDF:
+    1. Si PyMuPDF (fitz) está disponible, renderiza la página seleccionada a una imagen PIL
+       en alta resolución (220 DPI) para visualización y OCR, y además extrae el texto digital
+       nativo embebido en el PDF (ideal para Facturas Electrónicas AFIP/ARCA).
+    2. Si solo pypdf está disponible, extrae el texto digital del PDF y genera una vista previa.
+    Retorna: (imagen_pil, texto_digital_pdf, total_paginas, mensaje_error)
+    """
+    if not pdf_bytes or len(pdf_bytes) < 50:
+        return None, "", 0, "⚠️ El archivo PDF subido está vacío o incompleto."
+
+    if PYMUPDF_DISPONIBLE and fitz is not None:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            total_paginas = len(doc)
+            if total_paginas == 0:
+                doc.close()
+                return None, "", 0, "⚠️ El archivo PDF no contiene páginas válidas."
+
+            idx = max(0, min(indice_pagina, total_paginas - 1))
+            pagina = doc[idx]
+
+            # Extraer texto digital de la página seleccionada (y del resto si es multipágina)
+            texto_pag = pagina.get_text("text").strip()
+            if total_paginas > 1:
+                textos_todos = [doc[i].get_text("text").strip() for i in range(total_paginas)]
+                texto_digital = "\n\n".join(t for t in textos_todos if t)
+                if texto_pag:
+                    texto_digital = texto_pag + "\n\n" + texto_digital
+            else:
+                texto_digital = texto_pag
+
+            # Renderizar la página en alta definición (220 DPI) para OpenCV y Tesseract OCR
+            pix = pagina.get_pixmap(dpi=220, alpha=False)
+            imagen_pil = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            doc.close()
+            return imagen_pil, texto_digital.strip(), total_paginas, None
+        except Exception:
+            return (
+                None,
+                "",
+                0,
+                "❌ No se pudo leer el archivo PDF. Verificá que no tenga contraseña ni esté dañado.",
+            )
+
+    if PYPDF_DISPONIBLE and PdfReader is not None:
+        try:
+            lector = PdfReader(io.BytesIO(pdf_bytes))
+            total_paginas = len(lector.pages)
+            if total_paginas == 0:
+                return None, "", 0, "⚠️ El archivo PDF no contiene páginas válidas."
+
+            idx = max(0, min(indice_pagina, total_paginas - 1))
+            texto_digital = (lector.pages[idx].extract_text() or "").strip()
+
+            # Crear lienzo de vista previa con el texto digital extraído
+            lienzo = Image.new("RGB", (900, 1150), (255, 255, 255))
+            dibujo = ImageDraw.Draw(lienzo)
+            dibujo.rectangle([(25, 25), (875, 1125)], outline=(203, 213, 225), width=2)
+            dibujo.text((50, 50), f"Vista Previa PDF Digital (Página {idx + 1}/{total_paginas})", fill=(30, 41, 59))
+            y_pos = 100
+            for linea in (texto_digital.splitlines()[:32] if texto_digital else ["PDF sin capa de texto digital"]):
+                dibujo.text((50, y_pos), linea[:95], fill=(51, 65, 85))
+                y_pos += 28
+            return lienzo, texto_digital, total_paginas, None
+        except Exception:
+            return (
+                None,
+                "",
+                0,
+                "❌ No se pudo abrir el archivo PDF. Verificá que no esté protegido ni dañado.",
+            )
+
+    return (
+        None,
+        "",
+        0,
+        "⚠️ Para procesar facturas en PDF, instalá la librería ejecutando: `pip install pymupdf`.",
+    )
 
 
 # ==============================================================================
@@ -2116,15 +2216,15 @@ def main() -> None:
 
                 metodo_entrada = st.radio(
                     "Método de recepción:",
-                    options=["Subir archivo (JPG, PNG, WEBP)", "Capturar con cámara (Celular / PC)"],
+                    options=["Subir archivo (PDF, JPG, PNG, WEBP)", "Capturar con cámara (Celular / PC)"],
                     horizontal=True,
                 )
 
                 archivo_imagen = None
                 if metodo_entrada.startswith("Subir"):
                     archivo_imagen = st.file_uploader(
-                        "Arrastrá tu factura o ticket aquí, o hacé clic para explorar:",
-                        type=["png", "jpg", "jpeg", "webp"],
+                        "Arrastrá tu factura en PDF o imagen (JPG, PNG, WEBP) aquí, o hacé clic para explorar:",
+                        type=["pdf", "png", "jpg", "jpeg", "webp"],
                     )
                 else:
                     archivo_imagen = st.camera_input("Enfocá el comprobante con buena iluminación:")
@@ -2135,45 +2235,102 @@ def main() -> None:
                     imagen_enderezada = None
                     imagen_optimizada = None
                     recorte_exitoso = False
+                    es_archivo_pdf = False
+                    texto_digital_pdf = ""
+                    total_paginas_pdf = 1
 
-                    # Manejo de errores amigable al leer y preprocesar la imagen
+                    # Manejo de errores amigable al leer imagen o documento PDF
                     try:
                         bytes_img = archivo_imagen.getvalue()
-                        if not bytes_img or len(bytes_img) < 100:
+                        nombre_subido = getattr(archivo_imagen, "name", "captura_camara.png") or "comprobante.png"
+                        mime_subido = getattr(archivo_imagen, "type", "") or ""
+                        es_archivo_pdf = (
+                            nombre_subido.lower().endswith(".pdf")
+                            or "pdf" in mime_subido.lower()
+                            or bytes_img[:4] == b"%PDF"
+                        )
+
+                        if not bytes_img or len(bytes_img) < 50:
                             st.error(
                                 "⚠️ El archivo subido está vacío o incompleto. "
-                                "Por favor, seleccioná una imagen válida en formato JPG, PNG o WEBP."
+                                "Por favor, seleccioná una factura válida en formato PDF, JPG, PNG o WEBP."
                             )
+                        elif es_archivo_pdf:
+                            imagen_pdf, texto_digital_pdf, total_paginas_pdf, error_pdf = procesar_archivo_pdf(
+                                bytes_img, indice_pagina=0
+                            )
+                            if error_pdf or imagen_pdf is None:
+                                st.error(
+                                    error_pdf
+                                    or "❌ No pudimos procesar este archivo PDF. Verificá que no esté dañado."
+                                )
+                            else:
+                                if total_paginas_pdf > 1:
+                                    pagina_sel = st.selectbox(
+                                        f"📄 Documento PDF de {total_paginas_pdf} páginas — Seleccioná la página a visualizar:",
+                                        options=list(range(1, total_paginas_pdf + 1)),
+                                        index=0,
+                                    )
+                                    if pagina_sel > 1:
+                                        imagen_pdf_pag, texto_pag_sel, _, err_p = procesar_archivo_pdf(
+                                            bytes_img, indice_pagina=pagina_sel - 1
+                                        )
+                                        if not err_p and imagen_pdf_pag is not None:
+                                            imagen_pdf = imagen_pdf_pag
+                                            texto_digital_pdf = texto_pag_sel
+
+                                imagen_original = imagen_pdf.convert("RGB")
+                                st.session_state["ultimo_archivo_bytes"] = bytes_img
+                                st.session_state["ultimo_archivo_nombre"] = nombre_subido
+                                st.session_state["ultimo_archivo_mime"] = "application/pdf"
+                                imagen_valida = True
                         else:
                             imagen_original = ImageOps.exif_transpose(
                                 Image.open(io.BytesIO(bytes_img))
                             ).convert("RGB")
                             st.session_state["ultimo_archivo_bytes"] = bytes_img
-                            st.session_state["ultimo_archivo_nombre"] = getattr(
-                                archivo_imagen, "name", "captura_camara.png"
-                            )
-                            st.session_state["ultimo_archivo_mime"] = (
-                                getattr(archivo_imagen, "type", "image/png") or "image/png"
-                            )
+                            st.session_state["ultimo_archivo_nombre"] = nombre_subido
+                            st.session_state["ultimo_archivo_mime"] = mime_subido or "image/png"
                             imagen_valida = True
                     except Exception:
                         st.error(
-                            "❌ No pudimos abrir este archivo. Asegurate de subir una foto válida "
-                            "en formato **JPG, PNG o WEBP** que no esté dañada."
+                            "❌ No pudimos abrir este archivo. Asegurate de subir un comprobante válido "
+                            "en formato **PDF, JPG, PNG o WEBP** que no esté dañado."
                         )
 
                     if imagen_valida and imagen_original is not None:
-                        # Control preventivo de nitidez (foto borrosa o fuera de foco)
-                        puntaje_nitidez = calcular_nitidez_imagen(imagen_original)
-                        if puntaje_nitidez < 45.0:
-                            st.warning(
-                                "⚠️ **Aviso de calidad:** La foto parece estar un poco borrosa o fuera de foco. "
-                                "Si algún dato no se detecta bien, te sugerimos tomar la foto con más luz y buen enfoque."
-                            )
+                        if es_archivo_pdf:
+                            if len(texto_digital_pdf.strip()) >= 20:
+                                st.info(
+                                    f"📄 **Factura PDF Digital detectada ({total_paginas_pdf} pág.):** "
+                                    "Se extraerá el texto digital nativo del PDF combinado con OCR para máxima precisión."
+                                )
+                            else:
+                                st.info(
+                                    f"📄 **Factura PDF Escaneada detectada ({total_paginas_pdf} pág.):** "
+                                    "Página convertida a imagen de alta definición lista para OpenCV + Tesseract OCR."
+                                )
+                        else:
+                            # Control preventivo de nitidez en fotos tomadas con celular/cámara
+                            puntaje_nitidez = calcular_nitidez_imagen(imagen_original)
+                            if puntaje_nitidez < 45.0:
+                                st.warning(
+                                    "⚠️ **Aviso de calidad:** La foto parece estar un poco borrosa o fuera de foco. "
+                                    "Si algún dato no se detecta bien, te sugerimos tomar la foto con más luz y buen enfoque."
+                                )
 
                         try:
-                            if usar_recorte_camscanner:
-                                imagen_enderezada, recorte_exitoso = escanear_documento_con_estado(bytes_img)
+                            # Convertir imagen_original a bytes PNG en memoria si viene de un PDF
+                            if es_archivo_pdf:
+                                buf_temp = io.BytesIO()
+                                imagen_original.save(buf_temp, format="PNG")
+                                bytes_para_opencv = buf_temp.getvalue()
+                            else:
+                                bytes_para_opencv = bytes_img
+
+                            # Si es un PDF digital limpio, no hace falta deformar perspectiva salvo que sea un escaneo
+                            if usar_recorte_camscanner and not (es_archivo_pdf and len(texto_digital_pdf.strip()) >= 20):
+                                imagen_enderezada, recorte_exitoso = escanear_documento_con_estado(bytes_para_opencv)
                             else:
                                 imagen_enderezada, recorte_exitoso = imagen_original, False
 
@@ -2185,13 +2342,13 @@ def main() -> None:
                         except Exception:
                             st.warning(
                                 "ℹ️ No se pudo aplicar el filtro avanzado de imagen; "
-                                "se utilizará la foto original para la lectura."
+                                "se utilizará la vista original para la lectura."
                             )
                             imagen_enderezada = imagen_original
                             imagen_optimizada = imagen_original
                             recorte_exitoso = False
 
-                        if usar_recorte_camscanner:
+                        if usar_recorte_camscanner and not (es_archivo_pdf and len(texto_digital_pdf.strip()) >= 20):
                             if recorte_exitoso:
                                 st.caption("📐 **CamScanner OpenCV:** 4 esquinas detectadas — fondo recortado y perspectiva enderezada (`warpPerspective`).")
                             else:
@@ -2201,7 +2358,7 @@ def main() -> None:
                         with col_antes:
                             st.image(
                                 imagen_original,
-                                caption="Antes (Foto Original)",
+                                caption="Vista Original (PDF renderizado)" if es_archivo_pdf else "Antes (Foto Original)",
                                 use_container_width=True,
                             )
                         with col_despues:
@@ -2210,7 +2367,7 @@ def main() -> None:
                                 caption=(
                                     "Después (Recortada y Enderezada por OpenCV)"
                                     if recorte_exitoso
-                                    else "Después (Encuadre Original Conservado)"
+                                    else ("Vista Lista para Extracción" if es_archivo_pdf else "Después (Encuadre Original Conservado)")
                                 ),
                                 use_container_width=True,
                             )
@@ -2226,7 +2383,21 @@ def main() -> None:
                         if st.button("✨ Escanear y Extraer Datos con IA", type="primary", use_container_width=True):
                             try:
                                 with st.spinner("Procesando factura..."):
-                                    texto_detectado, alerta_ocr = ejecutar_ocr(imagen_optimizada, idioma="spa")
+                                    texto_ocr_img, alerta_ocr = ejecutar_ocr(imagen_optimizada, idioma="spa")
+
+                                    if es_archivo_pdf and len(texto_digital_pdf.strip()) >= 20:
+                                        # Combinar texto nativo del PDF + texto OCR (por si el logo/emisor está como imagen)
+                                        if texto_ocr_img and len(texto_ocr_img.strip()) >= 10:
+                                            texto_detectado = (
+                                                f"{texto_digital_pdf.strip()}\n\n"
+                                                f"--- LECTURA OCR COMPLEMENTARIA ---\n{texto_ocr_img.strip()}"
+                                            )
+                                        else:
+                                            texto_detectado = texto_digital_pdf.strip()
+                                        alerta_ocr = None
+                                    else:
+                                        texto_detectado = texto_ocr_img
+
                                     st.session_state["texto_ocr"] = texto_detectado
 
                                     if alerta_ocr:
@@ -2234,8 +2405,8 @@ def main() -> None:
 
                                     if not texto_detectado or len(texto_detectado.strip()) < 10:
                                         st.warning(
-                                            "⚠️ No logramos detectar texto suficiente en la imagen. "
-                                            "Puede que la foto esté borrosa, muy oscura o demasiado lejos. "
+                                            "⚠️ No logramos detectar texto suficiente en el documento. "
+                                            "Puede que la imagen esté borrosa, muy oscura o demasiado lejos. "
                                             "Intentá acercar la cámara o desactivar/activar el Filtro Escáner."
                                         )
                                     else:
@@ -2270,7 +2441,7 @@ def main() -> None:
                             except Exception:
                                 st.error(
                                     "❌ Ocurrió un inconveniente inesperado al analizar la factura. "
-                                    "Por favor, intentá nuevamente con una imagen más clara."
+                                    "Por favor, intentá nuevamente con un archivo más claro."
                                 )
 
         with col_resultados:
