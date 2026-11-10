@@ -79,8 +79,8 @@ CAMPOS_COMPROBANTE = {
 
 VALOR_NO_IDENTIFICADO = "No identificado"
 
-# Modelo de Visión principal configurado de forma fija (hardcodeada) para formato OpenAI/Groq
-MODELO_VISION_PRINCIPAL = "meta-llama/llama-4-scout-17b-16e-instruct"
+# Modelo principal configurado de forma fija (hardcodeada) en Groq Cloud
+MODELO_VISION_PRINCIPAL = "openai/gpt-oss-120b"
 ENDPOINT_VISION_PRINCIPAL = "https://api.groq.com/openai/v1/chat/completions"
 
 PROMPT_SISTEMA = """Te estoy enviando múltiples fragmentos fotográficos (imágenes) que pertenecen a una ÚNICA factura larga o ticket. Tu tarea es analizar todas las imágenes en conjunto, unir mentalmente la información y extraer los datos solicitados en un único objeto JSON consolidado sin duplicar información.
@@ -1054,25 +1054,57 @@ def extraer_con_vision_multimodal(
         forzar_json=True,
     )
 
+    def construir_payload_texto_consolidado(modelo_id: str, usar_json_mode: bool = True) -> Dict[str, Any]:
+        cuerpo_txt: Dict[str, Any] = {
+            "model": modelo_id,
+            "messages": [
+                {"role": "system", "content": PROMPT_SISTEMA},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Fragmentos procesados ({len(lista_imagenes_base64)} imágenes de la misma factura).\n\n"
+                        f"TEXTO CONSOLIDADO EXTRAÍDO DE TODOS LOS FRAGMENTOS:\n{texto_ocr_apoyo}"
+                    ),
+                },
+            ],
+            "temperature": 0.0,
+        }
+        if usar_json_mode:
+            cuerpo_txt["response_format"] = {"type": "json_object"}
+        return cuerpo_txt
+
     try:
         resp = requests.post(endpoint_url, headers=headers, json=payload, timeout=60)
 
-        # Si el modelo o endpoint rechaza response_format con múltiples imágenes, reintentar sin forzar_json
-        if resp.status_code == 400:
-            payload_sin_fmt = construir_payload_vision_multi_imagen(
-                lista_imagenes_base64=lista_imagenes_base64,
-                texto_ocr_apoyo=texto_ocr_apoyo,
-                forzar_json=False,
+        # Si el modelo (ej. openai/gpt-oss-120b) espera contenido consolidado en texto o sin response_format
+        if resp.status_code in (400, 404, 422):
+            resp_txt = requests.post(
+                endpoint_url,
+                headers=headers,
+                json=construir_payload_texto_consolidado(MODELO_VISION_PRINCIPAL, usar_json_mode=True),
+                timeout=60,
             )
-            resp = requests.post(endpoint_url, headers=headers, json=payload_sin_fmt, timeout=60)
-
-        # Respaldo automático con el segundo modelo de visión Llama 4 en Groq si el primero no está disponible
-        if resp.status_code in (400, 404):
-            payload_alt = dict(payload)
-            payload_alt["model"] = "meta-llama/llama-4-maverick-17b-128e-instruct"
-            resp_alt = requests.post(endpoint_url, headers=headers, json=payload_alt, timeout=60)
-            if resp_alt.ok:
-                resp = resp_alt
+            if resp_txt.status_code == 400:
+                resp_txt = requests.post(
+                    endpoint_url,
+                    headers=headers,
+                    json=construir_payload_texto_consolidado(MODELO_VISION_PRINCIPAL, usar_json_mode=False),
+                    timeout=60,
+                )
+            if resp_txt.ok:
+                resp = resp_txt
+            else:
+                # Respaldo con los otros modelos activos de la cuenta (qwen/qwen3.8-27b, openai/gpt-oss-20b)
+                for mod_alt in ("qwen/qwen3.8-27b", "openai/gpt-oss-20b", "meta-llama/llama-4-scout-17b-16e-instruct"):
+                    r_alt = requests.post(
+                        endpoint_url,
+                        headers=headers,
+                        json=construir_payload_texto_consolidado(mod_alt, usar_json_mode=False),
+                        timeout=60,
+                    )
+                    if r_alt.ok:
+                        resp = r_alt
+                        break
 
         if not resp.ok:
             detalle = ""
@@ -1082,7 +1114,7 @@ def extraer_con_vision_multimodal(
                 detalle = resp.text
             return (
                 normalizar_diccionario_extraido({}),
-                f"Aviso de API de Visión ({resp.status_code}): {detalle or resp.reason}",
+                f"Aviso de API ({resp.status_code}): {detalle or resp.reason}",
             )
 
         contenido = resp.json()["choices"][0]["message"]["content"]
@@ -1091,7 +1123,7 @@ def extraer_con_vision_multimodal(
     except Exception as exc:
         return (
             normalizar_diccionario_extraido({}),
-            f"Error de conexión con la API de Visión ({MODELO_VISION_PRINCIPAL}): {exc}",
+            f"Error de conexión con la API ({MODELO_VISION_PRINCIPAL}): {exc}",
         )
 
 
@@ -1984,12 +2016,12 @@ def aplicar_estilos_saas() -> None:
             background-color: #F8FAFC !important;
             border: 1px solid var(--border-card) !important;
             border-radius: 12px !important;
-            padding: 0.72rem 0.9rem !important;
+            padding: 0.65rem 0.75rem !important;
         }
 
         [data-testid="stMetricLabel"],
         [data-testid="stMetricLabel"] p {
-            font-size: 0.78rem !important;
+            font-size: 0.75rem !important;
             font-weight: 600 !important;
             color: var(--text-muted) !important;
             margin-bottom: 0.15rem !important;
@@ -1998,7 +2030,7 @@ def aplicar_estilos_saas() -> None:
         [data-testid="stMetricValue"],
         [data-testid="stMetricValue"] > div {
             font-family: 'Plus Jakarta Sans', sans-serif !important;
-            font-size: 1.15rem !important;
+            font-size: 0.98rem !important;
             font-weight: 700 !important;
             line-height: 1.25 !important;
             color: var(--text-main) !important;
