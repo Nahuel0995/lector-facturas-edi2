@@ -11,6 +11,7 @@ autenticación de usuarios y persistencia en la nube con Supabase (Storage + Pos
 con soporte de Modo Demo Local automático.
 """
 
+import base64
 import io
 import json
 import os
@@ -78,8 +79,13 @@ CAMPOS_COMPROBANTE = {
 
 VALOR_NO_IDENTIFICADO = "No identificado"
 
-PROMPT_SISTEMA = """Eres un asistente experto en extracción contable de comprobantes, tickets y facturas de Argentina (AFIP/ARCA, distribuidoras, comercios).
-Tu única tarea es analizar el texto extraído por OCR de un comprobante y devolver EXCLUSIVAMENTE un objeto JSON válido con las siguientes 9 claves exactas:
+# Modelo de Visión principal configurado de forma fija (hardcodeada) para formato OpenAI/Groq
+MODELO_VISION_PRINCIPAL = "meta-llama/llama-4-scout-17b-16e-instruct"
+ENDPOINT_VISION_PRINCIPAL = "https://api.groq.com/openai/v1/chat/completions"
+
+PROMPT_SISTEMA = """Te estoy enviando múltiples fragmentos fotográficos (imágenes) que pertenecen a una ÚNICA factura larga o ticket. Tu tarea es analizar todas las imágenes en conjunto, unir mentalmente la información y extraer los datos solicitados en un único objeto JSON consolidado sin duplicar información.
+
+Devuelve EXCLUSIVAMENTE un objeto JSON válido con las siguientes 9 claves exactas:
 
 {
   "tipo_documento": "Ej: Factura A, Factura B, Factura C, Ticket, Recibo o 'No identificado'",
@@ -93,15 +99,16 @@ Tu única tarea es analizar el texto extraído por OCR de un comprobante y devol
   "moneda": "Moneda identificada (ej: ARS, USD, $) o 'No identificado'"
 }
 
-REGLAS CONTABLES Y DE TABLAS HORIZONTALES (MUY IMPORTANTE):
-1. TABLAS DE PIE DE FACTURA EN FILAS SEPARADAS: En muchas Facturas A argentinas (ej: Salta Refrescos, Coca-Cola, distribuidoras, AFIP), los encabezados de la tabla ('Subtotal Neto', 'Impuesto Interno', 'IVA 21', 'Percepc. DGR', 'Percepc. Mun', 'TOTAL') aparecen en una línea y sus valores numéricos ('$29.813,34  $2.592,57  $6.260,80  $0,00  $0,00  $38.666,71') aparecen en la línea inmediatamente inferior en el mismo orden de izquierda a derecha:
+REGLAS CONTABLES Y DE CONSOLIDACIÓN MULTI-IMAGEN:
+1. CONSOLIDACIÓN DE FRAGMENTOS SUPERPUESTOS: Si el encabezado (emisor, CUIT, fecha, número) aparece en las primeras fotos y los subtotales/impuestos/total aparecen en las últimas fotos, combínalos en un único JSON final sin sumar dos veces ítems ni totales repetidos en las zonas de solapamiento.
+2. TABLAS DE PIE DE FACTURA EN FILAS SEPARADAS: En muchas Facturas A argentinas (ej: Salta Refrescos, Coca-Cola, distribuidoras, AFIP), los encabezados de la tabla ('Subtotal Neto', 'Impuesto Interno', 'IVA 21', 'Percepc. DGR', 'Percepc. Mun', 'TOTAL') aparecen en una línea y sus valores numéricos ('$29.813,34  $2.592,57  $6.260,80  $0,00  $0,00  $38.666,71') aparecen en la línea inmediatamente inferior en el mismo orden de izquierda a derecha:
    - El PRIMER monto positivo de esa fila de desglose (ej: 29813.34) corresponde a "Subtotal Neto" -> colócalo en "importe_neto".
    - Los montos intermedios mayores a cero antes del TOTAL (ej: Impuesto Interno 2592.57 + IVA 21 6260.80 = 8853.37, o el IVA 6260.80) corresponden a "impuestos_iva".
    - Verifica siempre la ecuación contable: importe_neto + impuestos_iva = importe_total (ej: 29813.34 + 2592.57 + 6260.80 = 38666.71).
-2. NO CONFUNDIR 'SUBTOTAL' CON 'TOTAL': Si arriba de la tabla aparece un recuadro 'SUBTOTAL $38.666,71' que tiene exactamente el mismo valor que el 'TOTAL $38.666,71', NO uses ese valor como importe_neto si en la tabla inferior existe el verdadero Subtotal Neto menor (ej: 29813.34).
-3. Convierte los importes argentinos (ej: $29.813,34) a formato decimal estándar con punto (ej: 29813.34).
-4. NO inventes datos que no figuren en el texto. Si un campo no aparece, coloca "No identificado".
-5. Devuelve ÚNICAMENTE el objeto JSON válido, sin explicaciones ni bloques markdown.
+3. NO CONFUNDIR 'SUBTOTAL' CON 'TOTAL': Si arriba de la tabla aparece un recuadro 'SUBTOTAL $38.666,71' que tiene exactamente el mismo valor que el 'TOTAL $38.666,71', NO uses ese valor como importe_neto si en la tabla inferior existe el verdadero Subtotal Neto menor (ej: 29813.34).
+4. Convierte los importes argentinos (ej: $29.813,34) a formato decimal estándar con punto (ej: 29813.34).
+5. NO inventes datos que no figuren en las imágenes o en el texto. Si un campo no aparece, coloca "No identificado".
+6. Devuelve ÚNICAMENTE el objeto JSON válido, sin explicaciones ni bloques markdown.
 """
 
 
@@ -860,22 +867,8 @@ def preparar_dataframe_analitica(registros: List[Dict[str, Any]]) -> pd.DataFram
 
 
 # ==============================================================================
-# 4. MÓDULO DE EXTRACCIÓN HÍBRIDA (GROQ / GEMINI / OLLAMA LOCAL + REGEX)
+# 4. MÓDULO DE VISIÓN MULTI-IMAGEN (FORMATO OPENAI / GROQ) Y REFUERZO CONTABLE
 # ==============================================================================
-
-def obtener_modelos_ollama(url_base: str = "http://localhost:11434") -> Tuple[List[str], Optional[str]]:
-    """Consulta automáticamente la API local de Ollama para listar los modelos instalados."""
-    try:
-        respuesta = requests.get(f"{url_base.rstrip('/')}/api/tags", timeout=3)
-        respuesta.raise_for_status()
-        datos = respuesta.json()
-        modelos = [m.get("name", "") for m in datos.get("models", []) if m.get("name")]
-        return modelos, None
-    except requests.exceptions.ConnectionError:
-        return [], "No se detectó el servidor local de Ollama en ejecución (http://localhost:11434)."
-    except Exception as exc:
-        return [], f"Error al consultar Ollama: {exc}"
-
 
 def normalizar_diccionario_extraido(datos_crudos: Dict) -> Dict[str, str]:
     """Garantiza que siempre existan los 9 campos esperados y reemplaza vacíos por 'No identificado'."""
@@ -890,7 +883,7 @@ def normalizar_diccionario_extraido(datos_crudos: Dict) -> Dict[str, str]:
 
 
 def extraer_json_de_respuesta(texto_respuesta: str) -> Dict:
-    """Extrae de forma segura un bloque JSON desde la respuesta del modelo de lenguaje."""
+    """Extrae de forma segura un bloque JSON desde la respuesta del modelo de visión."""
     try:
         return json.loads(texto_respuesta)
     except json.JSONDecodeError:
@@ -903,248 +896,203 @@ def extraer_json_de_respuesta(texto_respuesta: str) -> Dict:
     return {}
 
 
-def extraer_con_ollama_local(
-    texto_ocr: str,
-    modelo: str,
-    url_base: str = "http://localhost:11434",
-) -> Tuple[Dict[str, str], Optional[str]]:
-    """Envía el texto OCR al servidor local de Ollama y devuelve los 9 campos estructurados."""
-    endpoint = f"{url_base.rstrip('/')}/api/generate"
-    payload = {
-        "model": modelo,
-        "prompt": f"{PROMPT_SISTEMA}\n\nTEXTO OCR DEL COMPROBANTE:\n{texto_ocr}",
-        "format": "json",
-        "stream": False,
-        "options": {"temperature": 0.0},
-    }
-    try:
-        resp = requests.post(endpoint, json=payload, timeout=90)
-        resp.raise_for_status()
-        contenido = resp.json().get("response", "{}")
-        datos = extraer_json_de_respuesta(contenido)
-        return normalizar_diccionario_extraido(datos), None
-    except Exception as exc:
-        return normalizar_diccionario_extraido({}), f"Error en Ollama local ({modelo}): {exc}"
-
-
-def detectar_proveedor_api(api_key: str) -> str:
-    """Detecta automáticamente el proveedor según el formato de la API Key."""
-    clave = api_key.strip().strip('"').strip("'")
-    if clave.startswith("AIza"):
-        return "google"
-    if clave.startswith("sk-or-"):
-        return "openrouter"
-    return "groq"
-
-
-def obtener_modelos_nube(api_key: str) -> Tuple[List[str], str, Optional[str]]:
+def codificar_imagen_a_base64(
+    imagen_pil: Image.Image, max_lado: int = 1600, calidad: int = 85
+) -> str:
     """
-    Consulta en vivo a la API en la nube (Groq, Google Gemini u OpenRouter)
-    para listar únicamente los modelos activos y habilitados en la cuenta del usuario.
+    Convierte una imagen PIL a formato JPEG en memoria (redimensionando si supera max_lado
+    para optimizar el peso del payload multi-imagen) y devuelve su cadena en Base64.
     """
-    clave = api_key.strip().strip('"').strip("'")
-    if not clave:
-        return [], "groq", None
+    img_rgb = imagen_pil.convert("RGB")
+    ancho, alto = img_rgb.size
+    lado_mayor = max(ancho, alto)
+    if lado_mayor > max_lado:
+        escala = max_lado / float(lado_mayor)
+        nuevo_tam = (max(1, int(ancho * escala)), max(1, int(alto * escala)))
+        img_rgb = img_rgb.resize(nuevo_tam, Image.Resampling.LANCZOS)
 
-    proveedor = detectar_proveedor_api(clave)
+    buffer = io.BytesIO()
+    img_rgb.save(buffer, format="JPEG", quality=calidad, optimize=True)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    if proveedor == "google":
+
+def preparar_imagenes_base64(archivos_subidos: List[Any]) -> List[str]:
+    """
+    Toma la lista de archivos subidos por el usuario (accept_multiple_files=True)
+    y convierte cada imagen (o páginas de un PDF) a una cadena Base64 lista para la API de Visión.
+    """
+    lista_base64: List[str] = []
+    for archivo in archivos_subidos:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={clave}"
-            resp = requests.get(url, timeout=10)
-            if not resp.ok:
-                detalle = resp.json().get("error", {}).get("message", resp.reason)
-                return [], "google", f"Clave de Google inválida o sin acceso ({resp.status_code}): {detalle}"
-            datos = resp.json().get("models", [])
-            modelos = []
-            for m in datos:
-                metodos = m.get("supportedGenerationMethods", [])
-                nombre = m.get("name", "").replace("models/", "")
-                if "generateContent" in metodos and "gemini" in nombre.lower():
-                    if not any(excl in nombre.lower() for excl in ["vision", "embedding", "imagen", "veo", "tts", "audio"]):
-                        modelos.append(nombre)
-            modelos.sort(key=lambda x: (0 if "2.5-flash" in x else 1 if "2.0-flash" in x else 2 if "flash" in x else 3, x))
-            return modelos, "google", None
-        except Exception as exc:
-            return [], "google", f"Error al consultar modelos de Google Gemini: {exc}"
+            bytes_arch = archivo.getvalue() if hasattr(archivo, "getvalue") else bytes(archivo)
+            nombre = getattr(archivo, "name", "") or ""
+            mime = getattr(archivo, "type", "") or ""
+            es_pdf = nombre.lower().endswith(".pdf") or "pdf" in mime.lower() or bytes_arch[:4] == b"%PDF"
 
-    url_modelos = (
-        "https://openrouter.ai/api/v1/models"
-        if proveedor == "openrouter"
-        else "https://api.groq.com/openai/v1/models"
-    )
-    try:
-        headers = {"Authorization": f"Bearer {clave}"}
-        resp = requests.get(url_modelos, headers=headers, timeout=10)
-        if not resp.ok:
-            try:
-                detalle = resp.json().get("error", {}).get("message", resp.reason)
-            except Exception:
-                detalle = resp.reason
-            return [], proveedor, f"Error en API ({resp.status_code}): {detalle}"
+            if es_pdf:
+                img_pdf, _, total_pags, err_pdf = procesar_archivo_pdf(bytes_arch, indice_pagina=0)
+                if not err_pdf and img_pdf is not None:
+                    lista_base64.append(codificar_imagen_a_base64(img_pdf))
+                    for p_idx in range(1, min(total_pags, 5)):
+                        img_extra, _, _, err_ex = procesar_archivo_pdf(bytes_arch, indice_pagina=p_idx)
+                        if not err_ex and img_extra is not None:
+                            lista_base64.append(codificar_imagen_a_base64(img_extra))
+            else:
+                img_pil = ImageOps.exif_transpose(Image.open(io.BytesIO(bytes_arch))).convert("RGB")
+                lista_base64.append(codificar_imagen_a_base64(img_pil))
+        except Exception:
+            continue
+    return lista_base64
 
-        datos = resp.json().get("data", [])
-        palabras_excluidas = (
-            "whisper",
-            "tts",
-            "guard",
-            "safeguard",
-            "embed",
-            "playai",
-            "allam",
-            "distil-whisper",
-            "orpheus",
+
+def construir_payload_vision_multi_imagen(
+    lista_imagenes_base64: List[str],
+    prompt_texto: str = "",
+    texto_ocr_apoyo: str = "",
+    forzar_json: bool = True,
+) -> Dict[str, Any]:
+    """
+    Genera la estructura del payload para la API de LLM de Visión (formato OpenAI / Groq).
+    El campo 'content' del mensaje del usuario itera sobre todas las imágenes en base64 y adjunta
+    un bloque {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+    por cada foto subida, además del bloque de texto con las instrucciones.
+    """
+    instruccion_usuario = (
+        prompt_texto.strip()
+        or (
+            f"Te adjunto {len(lista_imagenes_base64)} fragmento(s) fotográfico(s) de una misma factura o ticket. "
+            "Analiza todas las imágenes en conjunto, une la información de principio a fin sin duplicar montos "
+            "y extrae los 9 campos contables en un único objeto JSON consolidado."
         )
-        modelos = [
-            m.get("id", "")
-            for m in datos
-            if m.get("id") and not any(p in m.get("id", "").lower() for p in palabras_excluidas)
-        ]
+    )
+    if texto_ocr_apoyo.strip():
+        instruccion_usuario += (
+            f"\n\nTEXTO AUXILIAR EXTRAÍDO POR OCR DE LOS FRAGMENTOS:\n{texto_ocr_apoyo.strip()}"
+        )
 
-        def prioridad_modelo(nombre_mod: str) -> Tuple[int, str]:
-            n = nombre_mod.lower()
-            if "llama-3.3" in n or "llama-4" in n:
-                return (0, n)
-            if "llama-3.1" in n or "llama3" in n:
-                return (1, n)
-            if "qwen" in n or "gemma" in n or "deepseek" in n:
-                return (2, n)
-            return (3, n)
-
-        modelos.sort(key=prioridad_modelo)
-        return modelos, proveedor, None
-    except Exception as exc:
-        return [], proveedor, f"No se pudieron listar los modelos de la nube: {exc}"
-
-
-def extraer_con_google_gemini(
-    texto_ocr: str,
-    api_key: str,
-    modelo: str = "gemini-2.5-flash",
-) -> Tuple[Dict[str, str], Optional[str]]:
-    """Extrae los 9 campos usando la API gratuita de Google AI Studio (Gemini)."""
-    clave = api_key.strip().strip('"').strip("'")
-    nombre_modelo = modelo.strip().replace("models/", "") or "gemini-2.5-flash"
-
-    def invocar_gemini(mod: str) -> requests.Response:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={clave}"
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": f"{PROMPT_SISTEMA}\n\nTEXTO OCR DEL COMPROBANTE:\n{texto_ocr}"}
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.0,
-                "responseMimeType": "application/json",
-            },
+    contenido_usuario: List[Dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": instruccion_usuario,
         }
-        return requests.post(url, json=payload, timeout=45)
+    ]
 
-    try:
-        resp = invocar_gemini(nombre_modelo)
-        if resp.status_code == 404:
-            modelos_disp, _, _ = obtener_modelos_nube(clave)
-            if modelos_disp:
-                nombre_modelo = modelos_disp[0]
-                resp = invocar_gemini(nombre_modelo)
+    # Iterar sobre la lista de imágenes base64 (respetando el tope de 5 imágenes por llamada en Groq)
+    for img_base64 in lista_imagenes_base64[:5]:
+        contenido_usuario.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{img_base64}",
+                },
+            }
+        )
 
-        if not resp.ok:
-            try:
-                detalle = resp.json().get("error", {}).get("message", resp.reason)
-            except Exception:
-                detalle = resp.text
-            return normalizar_diccionario_extraido({}), f"Error en Google Gemini ({resp.status_code}): {detalle}"
+    payload: Dict[str, Any] = {
+        "model": MODELO_VISION_PRINCIPAL,
+        "messages": [
+            {"role": "system", "content": PROMPT_SISTEMA},
+            {"role": "user", "content": contenido_usuario},
+        ],
+        "temperature": 0.0,
+    }
+    if forzar_json:
+        payload["response_format"] = {"type": "json_object"}
 
-        candidatos = resp.json().get("candidates", [])
-        texto_resp = candidatos[0]["content"]["parts"][0]["text"] if candidatos else "{}"
-        datos = extraer_json_de_respuesta(texto_resp)
-        return normalizar_diccionario_extraido(datos), None
-    except Exception as exc:
-        return normalizar_diccionario_extraido({}), f"Error de conexión con Google Gemini: {exc}"
+    return payload
 
 
-def extraer_con_api_nube(
-    texto_ocr: str,
+def extraer_con_vision_multimodal(
+    lista_imagenes_base64: List[str],
     api_key: str,
-    modelo: str = "llama-3.3-70b-versatile",
-    endpoint_url: str = "https://api.groq.com/openai/v1/chat/completions",
+    texto_ocr_apoyo: str = "",
+    endpoint_url: str = ENDPOINT_VISION_PRINCIPAL,
 ) -> Tuple[Dict[str, str], Optional[str]]:
     """
-    Envía el texto OCR a una API en la nube (Groq, Google Gemini u OpenRouter)
-    para permitir el uso desde cualquier celular en internet sin depender de hardware local.
+    Envía el payload multi-imagen al modelo de visión fijo (MODELO_VISION_PRINCIPAL)
+    usando el formato estándar OpenAI / Groq (/openai/v1/chat/completions).
     """
     clave_limpia = api_key.strip().strip('"').strip("'")
     if not clave_limpia:
-        return normalizar_diccionario_extraido({}), "Falta ingresar la clave de API (API Key) para el modo Nube."
+        return (
+            normalizar_diccionario_extraido({}),
+            "Falta ingresar la clave de API (GROQ_API_KEY) en el panel lateral.",
+        )
 
-    proveedor = detectar_proveedor_api(clave_limpia)
-    if proveedor == "google":
-        return extraer_con_google_gemini(texto_ocr, clave_limpia, modelo=modelo)
-
-    if proveedor == "openrouter" and "groq.com" in endpoint_url:
-        url_limpia = "https://openrouter.ai/api/v1/chat/completions"
-    else:
-        url_limpia = endpoint_url.strip().rstrip("/")
-        if not url_limpia.endswith("/chat/completions"):
-            if url_limpia.endswith("/v1"):
-                url_limpia += "/chat/completions"
-            elif "/v1" not in url_limpia:
-                url_limpia += "/openai/v1/chat/completions"
-            else:
-                url_limpia += "/chat/completions"
+    # Soporte transparente si el usuario pegó una clave de Google Gemini (AIza...)
+    if clave_limpia.startswith("AIza"):
+        try:
+            url_gem = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={clave_limpia}"
+            partes_gem: List[Dict[str, Any]] = [
+                {"text": f"{PROMPT_SISTEMA}\n\nTEXTO OCR AUXILIAR:\n{texto_ocr_apoyo}"}
+            ]
+            for img_b64 in lista_imagenes_base64[:5]:
+                partes_gem.append({"inline_data": {"mime_type": "image/jpeg", "data": img_b64}})
+            resp_g = requests.post(
+                url_gem,
+                json={
+                    "contents": [{"parts": partes_gem}],
+                    "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
+                },
+                timeout=60,
+            )
+            if resp_g.ok:
+                cand = resp_g.json().get("candidates", [])
+                txt_g = cand[0]["content"]["parts"][0]["text"] if cand else "{}"
+                return normalizar_diccionario_extraido(extraer_json_de_respuesta(txt_g)), None
+        except Exception:
+            pass
 
     headers = {
         "Authorization": f"Bearer {clave_limpia}",
         "Content-Type": "application/json",
     }
 
-    def enviar_peticion(mod_actual: str, forzar_json: bool = True) -> requests.Response:
-        cuerpo = {
-            "model": mod_actual.strip(),
-            "messages": [
-                {"role": "system", "content": PROMPT_SISTEMA},
-                {"role": "user", "content": f"TEXTO OCR DEL COMPROBANTE:\n{texto_ocr}"},
-            ],
-            "temperature": 0.0,
-        }
-        if forzar_json:
-            cuerpo["response_format"] = {"type": "json_object"}
-        return requests.post(url_limpia, headers=headers, json=cuerpo, timeout=45)
+    payload = construir_payload_vision_multi_imagen(
+        lista_imagenes_base64=lista_imagenes_base64,
+        texto_ocr_apoyo=texto_ocr_apoyo,
+        forzar_json=True,
+    )
 
     try:
-        resp = enviar_peticion(modelo, forzar_json=True)
+        resp = requests.post(endpoint_url, headers=headers, json=payload, timeout=60)
 
-        if resp.status_code == 404:
-            modelos_activos, _, _ = obtener_modelos_nube(clave_limpia)
-            for mod_alternativo in modelos_activos[:3]:
-                resp = enviar_peticion(mod_alternativo, forzar_json=True)
-                if resp.status_code == 400:
-                    resp = enviar_peticion(mod_alternativo, forzar_json=False)
-                if resp.ok:
-                    break
-
+        # Si el modelo o endpoint rechaza response_format con múltiples imágenes, reintentar sin forzar_json
         if resp.status_code == 400:
-            resp = enviar_peticion(modelo, forzar_json=False)
+            payload_sin_fmt = construir_payload_vision_multi_imagen(
+                lista_imagenes_base64=lista_imagenes_base64,
+                texto_ocr_apoyo=texto_ocr_apoyo,
+                forzar_json=False,
+            )
+            resp = requests.post(endpoint_url, headers=headers, json=payload_sin_fmt, timeout=60)
+
+        # Respaldo automático con el segundo modelo de visión Llama 4 en Groq si el primero no está disponible
+        if resp.status_code in (400, 404):
+            payload_alt = dict(payload)
+            payload_alt["model"] = "meta-llama/llama-4-maverick-17b-128e-instruct"
+            resp_alt = requests.post(endpoint_url, headers=headers, json=payload_alt, timeout=60)
+            if resp_alt.ok:
+                resp = resp_alt
 
         if not resp.ok:
             detalle = ""
             try:
-                error_json = resp.json()
-                detalle = error_json.get("error", {}).get("message", "")
+                detalle = resp.json().get("error", {}).get("message", "")
             except Exception:
                 detalle = resp.text
             return (
                 normalizar_diccionario_extraido({}),
-                f"Error en API Nube ({resp.status_code}): {detalle or resp.reason}",
+                f"Aviso de API de Visión ({resp.status_code}): {detalle or resp.reason}",
             )
+
         contenido = resp.json()["choices"][0]["message"]["content"]
         datos = extraer_json_de_respuesta(contenido)
         return normalizar_diccionario_extraido(datos), None
     except Exception as exc:
-        return normalizar_diccionario_extraido({}), f"Error de conexión con API Nube ({modelo}): {exc}"
+        return (
+            normalizar_diccionario_extraido({}),
+            f"Error de conexión con la API de Visión ({MODELO_VISION_PRINCIPAL}): {exc}",
+        )
 
 
 def extraer_montos_contables_ocr(
@@ -2251,43 +2199,16 @@ def main() -> None:
     renderizar_encabezado_y_auth(cliente_supabase, supabase_configurado)
 
     # --------------------------------------------------------------------------
-    # BARRA LATERAL: CONFIGURACIÓN HÍBRIDA Y DIAGNÓSTICO AUTOMÁTICO
+    # BARRA LATERAL: MOTOR DE VISIÓN FIJO Y CONFIGURACIÓN SIMPLIFICADA
     # --------------------------------------------------------------------------
     with st.sidebar:
-        st.header("⚙️ Motor de Captura IA")
+        st.header("⚙️ Motor de Visión IA")
 
-        # 1. Diagnóstico de Tesseract OCR
-        ruta_tesseract = configurar_ruta_tesseract()
-        if ruta_tesseract:
-            st.success(f"Tesseract OCR activo ({ruta_tesseract})")
-        else:
-            st.error("No se encontró Tesseract OCR en el sistema.")
-            ruta_manual = st.text_input(
-                "Ruta manual a tesseract.exe:",
-                placeholder=r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            )
-            if ruta_manual and os.path.exists(ruta_manual):
-                pytesseract.pytesseract.tesseract_cmd = ruta_manual
-                st.success("Ruta manual de Tesseract configurada.")
-
-        # 2. Estado de Supabase / Modo Demo Local
-        st.subheader("Repositorio en la Nube")
-        usuario_actual = st.session_state.get("usuario_supabase")
-        if usuario_actual and supabase_configurado:
-            st.success(f"☁️ Conectado: {usuario_actual['email']}")
-        elif supabase_configurado:
-            st.info("☁️ Supabase listo. Iniciá sesión arriba a la derecha para sincronizar tus facturas.")
-        else:
-            st.caption("⚡ **Modo Demo Local activo** (Configurá `SUPABASE_URL` y `SUPABASE_KEY` para guardado cloud).")
-
-        st.subheader("Calidad y Validación")
-        aplicar_hibrido_regex = st.checkbox(
-            "Refuerzo fiscal con Regex (CUIT / Fechas)",
-            value=True,
-            help="Valida y rescata patrones exactos de CUIT, fecha y número de factura si el modelo los omite.",
+        st.info(
+            f"👁️ **Modelo de Visión Fijo:**\n`{MODELO_VISION_PRINCIPAL}`\n\n"
+            "Soporta múltiples fotos superpuestas de una misma factura larga para consolidarlas en un único JSON."
         )
 
-        st.subheader("Motor de Inteligencia Artificial")
         clave_entorno = (
             os.environ.get("GROQ_API_KEY", "")
             or os.environ.get("GEMINI_API_KEY", "")
@@ -2303,85 +2224,36 @@ def main() -> None:
             except Exception:
                 clave_entorno = ""
 
-        modo_ia = st.radio(
-            "Modo de procesamiento:",
-            options=[
-                "1. Local (Ollama en esta PC)",
-                "2. Nube (Escalable para Celulares 24/7)",
-                "3. Solo Reglas Regex (Sin LLM)",
-            ],
-            index=1 if clave_entorno else 0,
+        api_key_nube = st.text_input(
+            "API Key (Groq Cloud):",
+            value=clave_entorno,
+            type="password",
+            placeholder="Pega tu clave gsk_...",
         )
 
-        modelo_seleccionado = ""
-        url_ollama = "http://localhost:11434"
-        api_key_nube = ""
-        endpoint_nube = "https://api.groq.com/openai/v1/chat/completions"
+        st.subheader("Calidad y Validación")
+        aplicar_hibrido_regex = st.checkbox(
+            "Refuerzo contable con Regex (CUIT / Fechas / Subtotales)",
+            value=True,
+            help="Valida matemáticamente Subtotal Neto + IVA = Total y rescata CUIT/fechas exactas.",
+        )
 
-        if modo_ia.startswith("1."):
-            url_ollama = st.text_input("URL de Ollama:", value="http://localhost:11434")
-            modelos_instalados, error_ollama = obtener_modelos_ollama(url_ollama)
+        # Diagnóstico de Tesseract OCR de apoyo
+        ruta_tesseract = configurar_ruta_tesseract()
+        if ruta_tesseract:
+            st.success(f"OCR auxiliar activo ({ruta_tesseract})")
+        else:
+            st.caption("ℹ️ Modo Visión Directa (Tesseract OCR local opcional).")
 
-            if modelos_instalados:
-                st.success(f"Ollama conectado ({len(modelos_instalados)} modelo/s detectado/s)")
-                modelo_seleccionado = st.selectbox(
-                    "Modelo instalado en tu Ollama:",
-                    options=modelos_instalados,
-                )
-            else:
-                st.warning(error_ollama or "No tienes modelos descargados en Ollama todavía.")
-                st.info(
-                    "💡 **¿No sabes qué modelo tienes?**\n"
-                    "Abre una terminal y ejecuta:\n"
-                    "`ollama pull llama3.2`\n"
-                    "Luego presiona **Recargar** en esta página."
-                )
-                modelo_seleccionado = st.text_input("Nombre manual del modelo:", value="llama3.2")
-
-        elif modo_ia.startswith("2."):
-            st.info(
-                "Acepta claves gratuitas de **Groq** (`gsk_...`), **Google Gemini** (`AIza...`) "
-                "u **OpenRouter** (`sk-or-...`). Detecta proveedor y modelos automáticamente."
-            )
-            api_key_nube = st.text_input(
-                "API Key (Groq o Google Gemini):",
-                value=clave_entorno,
-                type="password",
-                placeholder="Pega tu clave gsk_... o AIza...",
-            )
-
-            modelos_nube, proveedor_detectado, error_modelos_nube = obtener_modelos_nube(api_key_nube)
-            nombre_prov = {
-                "google": "Google Gemini",
-                "groq": "Groq Cloud",
-                "openrouter": "OpenRouter",
-            }.get(proveedor_detectado, "Nube")
-
-            if modelos_nube:
-                st.success(f"✅ {nombre_prov} activo ({len(modelos_nube)} modelos)")
-                modelo_seleccionado = st.selectbox(
-                    f"Modelo en {nombre_prov}:",
-                    options=modelos_nube,
-                )
-            else:
-                if api_key_nube.strip() and error_modelos_nube:
-                    st.warning(error_modelos_nube)
-                opciones_por_defecto = (
-                    ["gemini-2.5-flash", "gemini-2.0-flash"]
-                    if proveedor_detectado == "google"
-                    else ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-                )
-                modelo_seleccionado = st.selectbox(
-                    "Modelo en la nube:",
-                    options=opciones_por_defecto,
-                )
-
-            with st.expander("⚙️ Opciones avanzadas de API (opcional)", expanded=False):
-                endpoint_nube = st.text_input(
-                    "Endpoint API (solo para Groq/OpenRouter):",
-                    value="https://api.groq.com/openai/v1/chat/completions",
-                    help="Si usas Google Gemini (AIza...), el endpoint oficial de Google se selecciona automáticamente.",
-                )
+        # Estado de Supabase / Modo Demo Local
+        st.subheader("Repositorio en la Nube")
+        usuario_actual = st.session_state.get("usuario_supabase")
+        if usuario_actual and supabase_configurado:
+            st.success(f"☁️ Conectado: {usuario_actual['email']}")
+        elif supabase_configurado:
+            st.info("☁️ Supabase listo. Iniciá sesión arriba a la derecha para sincronizar tus facturas.")
+        else:
+            st.caption("⚡ **Modo Demo Local activo** (Configurá `SUPABASE_URL` y `SUPABASE_KEY` para guardado cloud).")
 
     # --------------------------------------------------------------------------
     # PESTAÑAS PRINCIPALES ESTILO SEGMENTED CONTROL SAAS
@@ -2406,8 +2278,8 @@ def main() -> None:
                 st.markdown(
                     """
                     <div class="captia-card-header">
-                        <span class="captia-card-title">1. Captura e Ingreso del Comprobante</span>
-                        <span class="captia-chip captia-chip-indigo">📥 Escáner Inteligente</span>
+                        <span class="captia-card-title">1. Captura Multi-Imagen del Comprobante</span>
+                        <span class="captia-chip captia-chip-indigo">🧩 Visión Multi-Fragmento</span>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -2429,249 +2301,211 @@ def main() -> None:
                         value=True,
                         help=(
                             "Ejecuta optimizar_para_tesseract(pil_image) con OpenCV: escala de grises, "
-                            "upscaling cúbico, filtro bilateral y binarización adaptativa (blockSize=31, C=15)."
+                            "upscaling cúbico, filtro bilateral y binarización adaptativa."
                         ),
                     )
 
                 metodo_entrada = st.radio(
                     "Método de recepción:",
-                    options=["Subir archivo (PDF, JPG, PNG, WEBP)", "Capturar con cámara (Celular / PC)"],
+                    options=["Subir archivos (Múltiples fotos o PDF)", "Capturar con cámara (Celular / PC)"],
                     horizontal=True,
                 )
 
-                archivo_imagen = None
+                archivos_subidos: List[Any] = []
                 if metodo_entrada.startswith("Subir"):
-                    archivo_imagen = st.file_uploader(
-                        "Arrastrá tu factura en PDF o imagen (JPG, PNG, WEBP) aquí, o hacé clic para explorar:",
+                    archivos_cargados = st.file_uploader(
+                        "Arrastrá una o varias fotos superpuestas de la misma factura (JPG, PNG, WEBP o PDF):",
                         type=["pdf", "png", "jpg", "jpeg", "webp"],
+                        accept_multiple_files=True,
                     )
+                    if archivos_cargados:
+                        archivos_subidos = list(archivos_cargados)
                 else:
-                    archivo_imagen = st.camera_input("Enfocá el comprobante con buena iluminación:")
+                    foto_camara = st.camera_input("Enfocá el comprobante con buena iluminación:")
+                    if foto_camara is not None:
+                        archivos_subidos = [foto_camara]
 
-                if archivo_imagen is not None:
-                    imagen_valida = False
-                    imagen_original = None
-                    imagen_enderezada = None
-                    imagen_optimizada = None
-                    recorte_exitoso = False
-                    es_archivo_pdf = False
-                    texto_digital_pdf = ""
-                    total_paginas_pdf = 1
+                if archivos_subidos:
+                    # Preparar todos los fragmentos subidos (fotos superpuestas o páginas de PDF)
+                    fragmentos_procesados: List[Dict[str, Any]] = []
+                    textos_digitales_pdf: List[str] = []
 
-                    # Manejo de errores amigable al leer imagen o documento PDF
-                    try:
-                        bytes_img = archivo_imagen.getvalue()
-                        nombre_subido = getattr(archivo_imagen, "name", "captura_camara.png") or "comprobante.png"
-                        mime_subido = getattr(archivo_imagen, "type", "") or ""
-                        es_archivo_pdf = (
-                            nombre_subido.lower().endswith(".pdf")
-                            or "pdf" in mime_subido.lower()
-                            or bytes_img[:4] == b"%PDF"
-                        )
-
-                        if not bytes_img or len(bytes_img) < 50:
-                            st.error(
-                                "⚠️ El archivo subido está vacío o incompleto. "
-                                "Por favor, seleccioná una factura válida en formato PDF, JPG, PNG o WEBP."
-                            )
-                        elif es_archivo_pdf:
-                            imagen_pdf, texto_digital_pdf, total_paginas_pdf, error_pdf = procesar_archivo_pdf(
-                                bytes_img, indice_pagina=0
-                            )
-                            if error_pdf or imagen_pdf is None:
-                                st.error(
-                                    error_pdf
-                                    or "❌ No pudimos procesar este archivo PDF. Verificá que no esté dañado."
-                                )
-                            else:
-                                if total_paginas_pdf > 1:
-                                    pagina_sel = st.selectbox(
-                                        f"📄 Documento PDF de {total_paginas_pdf} páginas — Seleccioná la página a visualizar:",
-                                        options=list(range(1, total_paginas_pdf + 1)),
-                                        index=0,
-                                    )
-                                    if pagina_sel > 1:
-                                        imagen_pdf_pag, texto_pag_sel, _, err_p = procesar_archivo_pdf(
-                                            bytes_img, indice_pagina=pagina_sel - 1
-                                        )
-                                        if not err_p and imagen_pdf_pag is not None:
-                                            imagen_pdf = imagen_pdf_pag
-                                            texto_digital_pdf = texto_pag_sel
-
-                                imagen_original = imagen_pdf.convert("RGB")
-                                st.session_state["ultimo_archivo_bytes"] = bytes_img
-                                st.session_state["ultimo_archivo_nombre"] = nombre_subido
-                                st.session_state["ultimo_archivo_mime"] = "application/pdf"
-                                imagen_valida = True
-                        else:
-                            imagen_original = ImageOps.exif_transpose(
-                                Image.open(io.BytesIO(bytes_img))
-                            ).convert("RGB")
-                            st.session_state["ultimo_archivo_bytes"] = bytes_img
-                            st.session_state["ultimo_archivo_nombre"] = nombre_subido
-                            st.session_state["ultimo_archivo_mime"] = mime_subido or "image/png"
-                            imagen_valida = True
-                    except Exception:
-                        st.error(
-                            "❌ No pudimos abrir este archivo. Asegurate de subir un comprobante válido "
-                            "en formato **PDF, JPG, PNG o WEBP** que no esté dañado."
-                        )
-
-                    if imagen_valida and imagen_original is not None:
-                        if es_archivo_pdf:
-                            if len(texto_digital_pdf.strip()) >= 20:
-                                st.info(
-                                    f"📄 **Factura PDF Digital detectada ({total_paginas_pdf} pág.):** "
-                                    "Se extraerá el texto digital nativo del PDF combinado con OCR para máxima precisión."
-                                )
-                            else:
-                                st.info(
-                                    f"📄 **Factura PDF Escaneada detectada ({total_paginas_pdf} pág.):** "
-                                    "Página convertida a imagen de alta definición lista para OpenCV + Tesseract OCR."
-                                )
-                        else:
-                            # Control preventivo de nitidez en fotos tomadas con celular/cámara
-                            puntaje_nitidez = calcular_nitidez_imagen(imagen_original)
-                            if puntaje_nitidez < 45.0:
-                                st.warning(
-                                    "⚠️ **Aviso de calidad:** La foto parece estar un poco borrosa o fuera de foco. "
-                                    "Si algún dato no se detecta bien, te sugerimos tomar la foto con más luz y buen enfoque."
-                                )
-
+                    for idx_arch, arch_item in enumerate(archivos_subidos):
                         try:
-                            # Convertir imagen_original a bytes PNG en memoria si viene de un PDF
-                            if es_archivo_pdf:
-                                buf_temp = io.BytesIO()
-                                imagen_original.save(buf_temp, format="PNG")
-                                bytes_para_opencv = buf_temp.getvalue()
-                            else:
-                                bytes_para_opencv = bytes_img
-
-                            # Si es un PDF digital limpio, no hace falta deformar perspectiva salvo que sea un escaneo
-                            if usar_recorte_camscanner and not (es_archivo_pdf and len(texto_digital_pdf.strip()) >= 20):
-                                imagen_enderezada, recorte_exitoso = escanear_documento_con_estado(bytes_para_opencv)
-                            else:
-                                imagen_enderezada, recorte_exitoso = imagen_original, False
-
-                            imagen_optimizada = (
-                                optimizar_para_tesseract(imagen_enderezada)
-                                if usar_filtro_escaner
-                                else imagen_enderezada
+                            bytes_item = arch_item.getvalue()
+                            nombre_item = getattr(arch_item, "name", f"fragmento_{idx_arch + 1}.png") or f"fragmento_{idx_arch + 1}.png"
+                            mime_item = getattr(arch_item, "type", "") or ""
+                            es_pdf_item = (
+                                nombre_item.lower().endswith(".pdf")
+                                or "pdf" in mime_item.lower()
+                                or bytes_item[:4] == b"%PDF"
                             )
+
+                            if not bytes_item or len(bytes_item) < 50:
+                                st.warning(f"⚠️ El archivo '{nombre_item}' está vacío y fue omitido.")
+                                continue
+
+                            # Guardar el primer archivo como referencia para Supabase Storage
+                            if idx_arch == 0:
+                                st.session_state["ultimo_archivo_bytes"] = bytes_item
+                                st.session_state["ultimo_archivo_nombre"] = nombre_item
+                                st.session_state["ultimo_archivo_mime"] = (
+                                    "application/pdf" if es_pdf_item else (mime_item or "image/png")
+                                )
+
+                            if es_pdf_item:
+                                img_p0, txt_dig_0, tot_pags, err_pdf = procesar_archivo_pdf(bytes_item, indice_pagina=0)
+                                if err_pdf or img_p0 is None:
+                                    st.error(err_pdf or f"❌ No se pudo procesar el PDF '{nombre_item}'.")
+                                    continue
+                                if txt_dig_0.strip():
+                                    textos_digitales_pdf.append(txt_dig_0.strip())
+
+                                # Soportar todas las páginas del PDF (hasta 5 fragmentos)
+                                paginas_a_procesar = [(0, img_p0, txt_dig_0)]
+                                for p_i in range(1, min(tot_pags, 5)):
+                                    img_pi, txt_pi, _, err_pi = procesar_archivo_pdf(bytes_item, indice_pagina=p_i)
+                                    if not err_pi and img_pi is not None:
+                                        paginas_a_procesar.append((p_i, img_pi, txt_pi))
+
+                                for num_p, img_pag, txt_pag in paginas_a_procesar:
+                                    img_orig_rgb = img_pag.convert("RGB")
+                                    buf_png = io.BytesIO()
+                                    img_orig_rgb.save(buf_png, format="PNG")
+                                    if usar_recorte_camscanner and len(txt_pag.strip()) < 20:
+                                        img_end, rec_ok = escanear_documento_con_estado(buf_png.getvalue())
+                                    else:
+                                        img_end, rec_ok = img_orig_rgb, False
+                                    img_opt = optimizar_para_tesseract(img_end) if usar_filtro_escaner else img_end
+                                    fragmentos_procesados.append(
+                                        {
+                                            "etiqueta": f"{nombre_item} (Pág. {num_p + 1}/{tot_pags})",
+                                            "original": img_orig_rgb,
+                                            "enderezada": img_end,
+                                            "optimizada": img_opt,
+                                            "recorte_ok": rec_ok,
+                                            "es_pdf": True,
+                                        }
+                                    )
+                            else:
+                                img_orig_rgb = ImageOps.exif_transpose(
+                                    Image.open(io.BytesIO(bytes_item))
+                                ).convert("RGB")
+
+                                if calcular_nitidez_imagen(img_orig_rgb) < 45.0:
+                                    st.warning(
+                                        f"⚠️ **Aviso de calidad ({nombre_item}):** La foto parece algo borrosa. "
+                                        "Si algún dato falta, probá tomarla con mejor iluminación."
+                                    )
+
+                                if usar_recorte_camscanner:
+                                    img_end, rec_ok = escanear_documento_con_estado(bytes_item)
+                                else:
+                                    img_end, rec_ok = img_orig_rgb, False
+
+                                img_opt = optimizar_para_tesseract(img_end) if usar_filtro_escaner else img_end
+                                fragmentos_procesados.append(
+                                    {
+                                        "etiqueta": f"Fragmento {idx_arch + 1}: {nombre_item}",
+                                        "original": img_orig_rgb,
+                                        "enderezada": img_end,
+                                        "optimizada": img_opt,
+                                        "recorte_ok": rec_ok,
+                                        "es_pdf": False,
+                                    }
+                                )
                         except Exception:
-                            st.warning(
-                                "ℹ️ No se pudo aplicar el filtro avanzado de imagen; "
-                                "se utilizará la vista original para la lectura."
+                            st.error(
+                                "❌ Uno de los archivos subidos no tiene un formato válido (JPG, PNG, WEBP o PDF)."
                             )
-                            imagen_enderezada = imagen_original
-                            imagen_optimizada = imagen_original
-                            recorte_exitoso = False
 
-                        if usar_recorte_camscanner and not (es_archivo_pdf and len(texto_digital_pdf.strip()) >= 20):
-                            if recorte_exitoso:
-                                st.caption("📐 **CamScanner OpenCV:** 4 esquinas detectadas — fondo recortado y perspectiva enderezada (`warpPerspective`).")
-                            else:
-                                st.caption("ℹ️ **CamScanner OpenCV:** No se detectaron 4 bordes con contraste suficiente; se conserva el encuadre original sin errores.")
+                    if fragmentos_procesados:
+                        cant_frag = len(fragmentos_procesados)
+                        if cant_frag > 1:
+                            st.info(
+                                f"🧩 **Modo Rompecabezas Activo ({cant_frag} fragmentos cargados):** "
+                                "La IA de Visión analizará todas las imágenes en conjunto y unificará los datos sin duplicar información."
+                            )
 
+                        # Mostrar vista previa Antes vs. Después (del primer fragmento directamente y el resto en desplegable si son varios)
+                        frag_principal = fragmentos_procesados[0]
                         col_antes, col_despues = st.columns(2)
                         with col_antes:
                             st.image(
-                                imagen_original,
-                                caption="Vista Original (PDF renderizado)" if es_archivo_pdf else "Antes (Foto Original)",
+                                frag_principal["original"],
+                                caption=f"Antes — {frag_principal['etiqueta']}",
                                 use_container_width=True,
                             )
                         with col_despues:
                             st.image(
-                                imagen_enderezada,
+                                frag_principal["enderezada"],
                                 caption=(
-                                    "Después (Recortada y Enderezada por OpenCV)"
-                                    if recorte_exitoso
-                                    else ("Vista Lista para Extracción" if es_archivo_pdf else "Después (Encuadre Original Conservado)")
+                                    f"Después (OpenCV) — {frag_principal['etiqueta']}"
+                                    if frag_principal["recorte_ok"]
+                                    else f"Vista Procesada — {frag_principal['etiqueta']}"
                                 ),
                                 use_container_width=True,
                             )
 
-                        if usar_filtro_escaner:
-                            with st.expander("🔍 Ver imagen binarizada que recibe Tesseract OCR", expanded=False):
-                                st.image(
-                                    imagen_optimizada,
-                                    caption="Salida de optimizar_para_tesseract() lista para OCR",
-                                    use_container_width=True,
-                                )
+                        if cant_frag > 1:
+                            with st.expander(f"🖼️ Ver los {cant_frag - 1} fragmento(s) fotográfico(s) adicional(es)", expanded=False):
+                                for frag_extra in fragmentos_procesados[1:]:
+                                    c_a, c_d = st.columns(2)
+                                    with c_a:
+                                        st.image(frag_extra["original"], caption=f"Original — {frag_extra['etiqueta']}", use_container_width=True)
+                                    with c_d:
+                                        st.image(frag_extra["enderezada"], caption=f"Procesada — {frag_extra['etiqueta']}", use_container_width=True)
 
                         if st.button("✨ Escanear y Extraer Datos con IA", type="primary", use_container_width=True):
                             try:
                                 with st.spinner("Procesando factura..."):
-                                    texto_ocr_img, alerta_ocr = ejecutar_ocr(imagen_optimizada, idioma="spa")
+                                    # 1. Convertir cada imagen procesada a Base64 para el payload Multi-Imagen
+                                    lista_imagenes_base64 = [
+                                        codificar_imagen_a_base64(frag["enderezada"])
+                                        for frag in fragmentos_procesados
+                                    ]
 
-                                    # Si se usó el filtro binarizado, sumar lectura sobre la imagen sin binarizar
-                                    # para no perder números de trazo fino ni encabezados grises en tablas de facturas
-                                    if usar_filtro_escaner and imagen_enderezada is not None:
-                                        texto_ocr_natural, _ = ejecutar_ocr(imagen_enderezada, idioma="spa")
-                                        if texto_ocr_natural and texto_ocr_natural.strip() != texto_ocr_img.strip():
-                                            texto_ocr_img = (
-                                                f"{texto_ocr_img.strip()}\n\n"
-                                                f"--- LECTURA ESCALA NATURAL (TABLAS Y TRAZOS FINOS) ---\n"
-                                                f"{texto_ocr_natural.strip()}"
-                                            ).strip()
+                                    # 2. Ejecutar OCR auxiliar sobre cada fragmento para respaldo y validación contable
+                                    bloques_ocr: List[str] = list(textos_digitales_pdf)
+                                    for idx_f, frag in enumerate(fragmentos_procesados):
+                                        txt_bin, _ = ejecutar_ocr(frag["optimizada"], idioma="spa")
+                                        if txt_bin:
+                                            bloques_ocr.append(f"[FRAGMENTO {idx_f + 1}]\n{txt_bin}")
+                                        if usar_filtro_escaner:
+                                            txt_nat, _ = ejecutar_ocr(frag["enderezada"], idioma="spa")
+                                            if txt_nat and txt_nat.strip() != txt_bin.strip():
+                                                bloques_ocr.append(f"[FRAGMENTO {idx_f + 1} - ESCALA NATURAL]\n{txt_nat}")
 
-                                    if es_archivo_pdf and len(texto_digital_pdf.strip()) >= 20:
-                                        # Combinar texto nativo del PDF + texto OCR (por si el logo/emisor está como imagen)
-                                        if texto_ocr_img and len(texto_ocr_img.strip()) >= 10:
-                                            texto_detectado = (
-                                                f"{texto_digital_pdf.strip()}\n\n"
-                                                f"--- LECTURA OCR COMPLEMENTARIA ---\n{texto_ocr_img.strip()}"
-                                            )
-                                        else:
-                                            texto_detectado = texto_digital_pdf.strip()
-                                        alerta_ocr = None
-                                    else:
-                                        texto_detectado = texto_ocr_img
-
+                                    texto_detectado = "\n\n".join(bloques_ocr).strip()
                                     st.session_state["texto_ocr"] = texto_detectado
 
-                                    if alerta_ocr:
-                                        st.warning(alerta_ocr)
+                                    # 3. Enviar Payload Multi-Imagen al modelo de visión fijo (MODELO_VISION_PRINCIPAL)
+                                    datos_ext, error_ia = extraer_con_vision_multimodal(
+                                        lista_imagenes_base64=lista_imagenes_base64,
+                                        api_key=api_key_nube,
+                                        texto_ocr_apoyo=texto_detectado,
+                                    )
 
-                                    if not texto_detectado or len(texto_detectado.strip()) < 10:
-                                        st.warning(
-                                            "⚠️ No logramos detectar texto suficiente en el documento. "
-                                            "Puede que la imagen esté borrosa, muy oscura o demasiado lejos. "
-                                            "Intentá acercar la cámara o desactivar/activar el Filtro Escáner."
-                                        )
-                                    else:
-                                        error_ia = None
-                                        if modo_ia.startswith("1."):
-                                            datos_ext, error_ia = extraer_con_ollama_local(
-                                                texto_detectado,
-                                                modelo=modelo_seleccionado,
-                                                url_base=url_ollama,
-                                            )
-                                        elif modo_ia.startswith("2."):
-                                            datos_ext, error_ia = extraer_con_api_nube(
-                                                texto_detectado,
-                                                api_key=api_key_nube,
-                                                modelo=modelo_seleccionado,
-                                                endpoint_url=endpoint_nube,
-                                            )
-                                        else:
-                                            datos_ext = extraer_con_reglas_regex(texto_detectado)
-
-                                        if error_ia:
+                                    if error_ia:
+                                        if texto_detectado and len(texto_detectado) >= 10:
                                             st.warning(
-                                                "ℹ️ El servicio de IA en la nube demoró o devolvió un aviso; "
-                                                "se aplicó automáticamente la extracción de respaldo por reglas (Regex)."
+                                                f"ℹ️ {error_ia}\nSe aplicó automáticamente la extracción contable por reglas sobre los {cant_frag} fragmento(s)."
                                             )
                                             datos_ext = extraer_con_reglas_regex(texto_detectado)
-                                        elif aplicar_hibrido_regex:
-                                            datos_ext = aplicar_refuerzo_regex(datos_ext, texto_detectado)
+                                        else:
+                                            st.warning(f"⚠️ {error_ia}")
+                                    elif aplicar_hibrido_regex and texto_detectado:
+                                        datos_ext = aplicar_refuerzo_regex(datos_ext, texto_detectado)
 
-                                        st.session_state["datos_actuales"] = datos_ext
-                                        st.success("✅ Comprobante procesado con éxito. Revisá los montos y datos en el panel derecho.")
+                                    st.session_state["datos_actuales"] = datos_ext
+                                    st.success(
+                                        f"✅ Factura procesada consolidando {cant_frag} fragmento(s). "
+                                        "Revisá los montos y datos en el panel derecho."
+                                    )
                             except Exception:
                                 st.error(
-                                    "❌ Ocurrió un inconveniente inesperado al analizar la factura. "
-                                    "Por favor, intentá nuevamente con un archivo más claro."
+                                    "❌ Ocurrió un inconveniente inesperado al analizar los fragmentos de la factura. "
+                                    "Por favor, intentá nuevamente con imágenes más claras."
                                 )
 
         with col_resultados:
