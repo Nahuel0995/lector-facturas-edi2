@@ -83,9 +83,34 @@ VALOR_NO_IDENTIFICADO = "No identificado"
 MODELO_VISION_PRINCIPAL = "openai/gpt-oss-120b"
 ENDPOINT_VISION_PRINCIPAL = "https://api.groq.com/openai/v1/chat/completions"
 
+PROMPT_ITEMS_FACTURA = """Eres un sistema experto en extracción de datos estructurados a partir de imágenes de documentos contables y facturas (OCR e interpretación semántica).
+
+Tu tarea es analizar la factura proporcionada y extraer EXCLUSIVAMENTE la tabla de ítems/productos facturados.
+
+Debes devolver la información en un formato JSON estrictamente válido. Para cada línea, extrae:
+
+1. "descripcion": (String) El texto exacto que describe el producto o servicio.
+2. "cantidad_facturada": (Float) La cantidad de bultos o unidades que marca la línea.
+3. "precio_linea_impreso": (Float) El valor monetario unitario impreso en esa línea.
+4. "unidades_por_empaque": (Entero) Analiza la descripción. Si el texto indica que es un empaque múltiple (ej. "Gaseosa 6x3L", "Caja x 12", "Pack de 4"), extrae el número de unidades individuales que contiene (6, 12, 4). Si no hay indicios de ser un empaque múltiple, el valor por defecto es 1.
+
+Devuelve ÚNICAMENTE el JSON, con esta estructura base:
+{
+  "items": [
+    {
+      "descripcion": "Manaos Cola 6x3L",
+      "cantidad_facturada": 1.0,
+      "precio_linea_impreso": 8200.0,
+      "unidades_por_empaque": 6
+    }
+  ]
+}
+"""
+
 PROMPT_SISTEMA = """Te estoy enviando múltiples fragmentos fotográficos (imágenes) que pertenecen a una ÚNICA factura larga o ticket. Tu tarea es analizar todas las imágenes en conjunto, unir mentalmente la información y extraer los datos solicitados en un único objeto JSON consolidado sin duplicar información.
 
-Devuelve EXCLUSIVAMENTE un objeto JSON válido con las siguientes 9 claves exactas:
+Eres un sistema experto en extracción de datos estructurados a partir de imágenes de documentos contables y facturas (OCR e interpretación semántica).
+Devuelve EXCLUSIVAMENTE un objeto JSON válido con las 9 claves generales del comprobante Y la clave "items" con el detalle de productos/servicios facturados:
 
 {
   "tipo_documento": "Ej: Factura A, Factura B, Factura C, Ticket, Recibo o 'No identificado'",
@@ -96,19 +121,32 @@ Devuelve EXCLUSIVAMENTE un objeto JSON válido con las siguientes 9 claves exact
   "importe_neto": "Subtotal neto gravado sin impuestos en formato numérico con punto decimal (ej: 29813.34) o 'No identificado'",
   "impuestos_iva": "Suma total de impuestos discriminados (IVA 21%, IVA 10.5%, Impuesto Interno, Percepciones) en formato numérico con punto decimal (ej: 8853.37 o 6260.80) o 'No identificado'",
   "importe_total": "Importe total final en formato numérico con punto decimal (ej: 38666.71) o 'No identificado'",
-  "moneda": "Moneda identificada (ej: ARS, USD, $) o 'No identificado'"
+  "moneda": "Moneda identificada (ej: ARS, USD, $) o 'No identificado'",
+  "items": [
+    {
+      "descripcion": "Manaos Cola 6x3L",
+      "cantidad_facturada": 1.0,
+      "precio_linea_impreso": 8200.0,
+      "unidades_por_empaque": 6
+    }
+  ]
 }
 
+REGLAS PARA LA TABLA DE ÍTEMS ("items"):
+Para cada línea de producto o servicio facturado, extrae:
+1. "descripcion": (String) El texto exacto que describe el producto o servicio.
+2. "cantidad_facturada": (Float) La cantidad de bultos o unidades que marca la línea.
+3. "precio_linea_impreso": (Float) El valor monetario unitario del bulto/artículo impreso en esa línea (si solo figura el subtotal de la línea, divídelo por cantidad_facturada).
+4. "unidades_por_empaque": (Entero) Analiza la descripción. Si el texto indica que es un empaque múltiple (ej. "Gaseosa 6x3L", "Caja x 12", "Pack de 4", "24x473cc"), extrae el número de unidades individuales que contiene (6, 12, 4, 24). Si no hay indicios de ser un empaque múltiple, el valor por defecto es 1.
+
 REGLAS CONTABLES Y DE CONSOLIDACIÓN MULTI-IMAGEN:
-1. CONSOLIDACIÓN DE FRAGMENTOS SUPERPUESTOS: Si el encabezado (emisor, CUIT, fecha, número) aparece en las primeras fotos y los subtotales/impuestos/total aparecen en las últimas fotos, combínalos en un único JSON final sin sumar dos veces ítems ni totales repetidos en las zonas de solapamiento.
-2. TABLAS DE PIE DE FACTURA EN FILAS SEPARADAS: En muchas Facturas A argentinas (ej: Salta Refrescos, Coca-Cola, distribuidoras, AFIP), los encabezados de la tabla ('Subtotal Neto', 'Impuesto Interno', 'IVA 21', 'Percepc. DGR', 'Percepc. Mun', 'TOTAL') aparecen en una línea y sus valores numéricos ('$29.813,34  $2.592,57  $6.260,80  $0,00  $0,00  $38.666,71') aparecen en la línea inmediatamente inferior en el mismo orden de izquierda a derecha:
+1. CONSOLIDACIÓN DE FRAGMENTOS SUPERPUESTOS: Si el encabezado aparece en las primeras fotos y los ítems/totales en las siguientes, combínalos en un único JSON final sin duplicar líneas en las zonas de solapamiento.
+2. TABLAS DE PIE DE FACTURA EN FILAS SEPARADAS: En muchas Facturas A argentinas (ej: Salta Refrescos, Coca-Cola, distribuidoras, AFIP), los encabezados de la tabla ('Subtotal Neto', 'Impuesto Interno', 'IVA 21', 'Percepc. DGR', 'Percepc. Mun', 'TOTAL') aparecen en una línea y sus valores numéricos ('$29.813,34  $2.592,57  $6.260,80  $0,00  $0,00  $38.666,71') aparecen en la línea inmediatamente inferior:
    - El PRIMER monto positivo de esa fila de desglose (ej: 29813.34) corresponde a "Subtotal Neto" -> colócalo en "importe_neto".
-   - Los montos intermedios mayores a cero antes del TOTAL (ej: Impuesto Interno 2592.57 + IVA 21 6260.80 = 8853.37, o el IVA 6260.80) corresponden a "impuestos_iva".
-   - Verifica siempre la ecuación contable: importe_neto + impuestos_iva = importe_total (ej: 29813.34 + 2592.57 + 6260.80 = 38666.71).
-3. NO CONFUNDIR 'SUBTOTAL' CON 'TOTAL': Si arriba de la tabla aparece un recuadro 'SUBTOTAL $38.666,71' que tiene exactamente el mismo valor que el 'TOTAL $38.666,71', NO uses ese valor como importe_neto si en la tabla inferior existe el verdadero Subtotal Neto menor (ej: 29813.34).
+   - Los montos intermedios mayores a cero antes del TOTAL (ej: Impuesto Interno 2592.57 + IVA 21 6260.80 = 8853.37) corresponden a "impuestos_iva".
+3. NO CONFUNDIR 'SUBTOTAL' CON 'TOTAL': Si arriba de la tabla aparece 'SUBTOTAL $38.666,71' igual al 'TOTAL $38.666,71', NO uses ese valor como importe_neto si existe el Subtotal Neto menor (ej: 29813.34).
 4. Convierte los importes argentinos (ej: $29.813,34) a formato decimal estándar con punto (ej: 29813.34).
-5. NO inventes datos que no figuren en las imágenes o en el texto. Si un campo no aparece, coloca "No identificado".
-6. Devuelve ÚNICAMENTE el objeto JSON válido, sin explicaciones ni bloques markdown.
+5. Devuelve ÚNICAMENTE el objeto JSON válido, sin explicaciones ni bloques markdown.
 """
 
 
@@ -882,6 +920,248 @@ def normalizar_diccionario_extraido(datos_crudos: Dict) -> Dict[str, str]:
     return resultado
 
 
+def detectar_unidades_por_empaque(descripcion: str) -> int:
+    """
+    Analiza semánticamente la descripción de un ítem para detectar si corresponde a un
+    empaque múltiple (ej. 'Manaos Cola 6x3L' -> 6, 'Caja x 12' -> 12, 'Pack de 4' -> 4,
+    '24x473cc' -> 24, 'Fardo x 8' -> 8). Si no hay indicios, devuelve 1 por defecto.
+    """
+    if not descripcion:
+        return 1
+    texto = str(descripcion).strip()
+
+    # 1. Patrones tipo "6x3L", "6 x 2.25L", "24x473cc", "12x500ml", "6X1500CC"
+    m_mult_medida = re.search(
+        r"\b(\d{1,3})\s*[xX\*]\s*\d+(?:[.,]\d+)?\s*(?:l|lt|lts|litros?|cc|ml|cm3|g|gr|grs|kg|oz)\b",
+        texto,
+        re.IGNORECASE,
+    )
+    if m_mult_medida:
+        unidades = int(m_mult_medida.group(1))
+        if 1 < unidades <= 200:
+            return unidades
+
+    # 2. Patrones explícitos de empaque: "Caja x 12", "Pack de 4", "Fardo x 6", "Bulto de 24", "Display x 12"
+    m_empaque = re.search(
+        r"\b(?:caja|pack|fardo|bulto|display|bandeja|estuche|bolsa|sixpack)\s*(?:de|x|por|\*)?\s*(\d{1,3})\b",
+        texto,
+        re.IGNORECASE,
+    )
+    if m_empaque:
+        unidades = int(m_empaque.group(1))
+        if 1 < unidades <= 500:
+            return unidades
+
+    # 3. Patrones tipo "x 12 un", "x6u", "x 6 uds", "6x" seguido de capacidad
+    m_unid = re.search(
+        r"(?:\b[xX]\s*(\d{1,3})\s*(?:u|un|unid|unidades|uds|bot|latas?)?\b|\b(\d{1,3})\s*[xX]\s*\d+\b)",
+        texto,
+        re.IGNORECASE,
+    )
+    if m_unid:
+        val_str = m_unid.group(1) or m_unid.group(2)
+        if val_str:
+            unidades = int(val_str)
+            if 1 < unidades <= 200:
+                return unidades
+
+    return 1
+
+
+def normalizar_items_extraidos(items_crudos: Any) -> List[Dict[str, Any]]:
+    """
+    Normaliza la lista de ítems extraídos por la IA garantizando la estructura exacta:
+    - descripcion (str)
+    - cantidad_facturada (float)
+    - precio_linea_impreso (float)
+    - unidades_por_empaque (int >= 1)
+    """
+    if not isinstance(items_crudos, list):
+        return []
+
+    items_limpios: List[Dict[str, Any]] = []
+    for item in items_crudos:
+        if not isinstance(item, dict):
+            continue
+
+        desc = str(
+            item.get("descripcion")
+            or item.get("producto")
+            or item.get("detalle")
+            or item.get("concepto")
+            or ""
+        ).strip()
+        if not desc or desc.lower() in {"null", "none", "n/a", "no identificado"}:
+            continue
+
+        cant_raw = item.get("cantidad_facturada", item.get("cantidad", 1.0))
+        cant_val = convertir_monto_a_float(cant_raw)
+        if cant_val <= 0:
+            try:
+                cant_val = float(str(cant_raw).replace(",", ".").strip())
+            except Exception:
+                cant_val = 1.0
+        if cant_val <= 0:
+            cant_val = 1.0
+
+        precio_raw = item.get(
+            "precio_linea_impreso",
+            item.get("precio_unitario", item.get("precio", item.get("importe", 0.0))),
+        )
+        precio_val = convertir_monto_a_float(precio_raw)
+        if precio_val < 0:
+            precio_val = 0.0
+
+        unid_raw = item.get("unidades_por_empaque", None)
+        unid_detectada_desc = detectar_unidades_por_empaque(desc)
+        try:
+            unid_val = int(float(str(unid_raw).replace(",", ".").strip())) if unid_raw is not None else 0
+        except Exception:
+            unid_val = 0
+
+        # Si la IA devolvió <= 1 pero la descripción indica explícitamente un empaque múltiple (ej. 6x3L), usar el detectado
+        if unid_val <= 1 and unid_detectada_desc > 1:
+            unid_val = unid_detectada_desc
+        elif unid_val < 1:
+            unid_val = 1
+
+        items_limpios.append(
+            {
+                "descripcion": desc,
+                "cantidad_facturada": round(float(cant_val), 2),
+                "precio_linea_impreso": round(float(precio_val), 2),
+                "unidades_por_empaque": int(unid_val),
+            }
+        )
+
+    return items_limpios
+
+
+def extraer_items_con_regex(texto_ocr: str) -> List[Dict[str, Any]]:
+    """
+    Extractor de respaldo para recuperar líneas de productos/artículos desde el texto OCR
+    cuando no se dispone de respuesta del modelo o como refuerzo en facturas tabulares.
+    """
+    if not texto_ocr or not texto_ocr.strip():
+        return []
+
+    items_detectados: List[Dict[str, Any]] = []
+    palabras_excluir = (
+        "subtotal",
+        "total",
+        "cuit",
+        "ingresos brutos",
+        "inicio de actividades",
+        "condicion de venta",
+        "responsable inscripto",
+        "cae",
+        "vencimiento",
+        "percepc",
+        "impuesto interno",
+        "son pesos",
+        "punto de venta",
+        "comprobante",
+        "domicilio",
+        "cliente",
+        "razon social",
+        "fecha",
+    )
+
+    for linea in texto_ocr.splitlines():
+        linea_limpia = linea.strip()
+        if len(linea_limpia) < 8:
+            continue
+        linea_low = linea_limpia.lower()
+        if any(p in linea_low for p in palabras_excluir):
+            continue
+
+        # Patrón común de línea de factura: [Código opcional] [Descripción con letras] [Cantidad] [Precio] [Subtotal opcional]
+        montos_linea = re.findall(r"\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d+[.,]\d{2}", linea_limpia)
+        if not montos_linea:
+            continue
+
+        precio_impreso = convertir_monto_a_float(montos_linea[0])
+        if precio_impreso <= 0:
+            continue
+
+        # Extraer descripción quitando códigos iniciales y columnas numéricas finales
+        sin_montos = re.sub(r"[\$]?\s*(?:\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d+[.,]\d{2}).*$", "", linea_limpia).strip()
+        # Buscar si al principio o al final de sin_montos está la cantidad facturada
+        m_cant_ini = re.match(r"^(\d+(?:[.,]\d+)?)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ].+)$", sin_montos)
+        m_cod_desc_cant = re.match(r"^(?:\d{3,14}\s+)?([A-Za-zÁÉÍÓÚÑáéíóúñ].*?)\s+(\d+(?:[.,]\d+)?)$", sin_montos)
+
+        cantidad_fact = 1.0
+        descripcion_item = sin_montos
+
+        if m_cod_desc_cant:
+            descripcion_item = m_cod_desc_cant.group(1).strip()
+            c_try = convertir_monto_a_float(m_cod_desc_cant.group(2))
+            if 0 < c_try <= 1000:
+                cantidad_fact = c_try
+        elif m_cant_ini:
+            c_try = convertir_monto_a_float(m_cant_ini.group(1))
+            if 0 < c_try <= 500:
+                cantidad_fact = c_try
+                descripcion_item = m_cant_ini.group(2).strip()
+
+        descripcion_item = re.sub(r"^\d{4,14}\s+", "", descripcion_item).strip(" -|:")
+        if len(descripcion_item) < 3 or not re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]{3,}", descripcion_item):
+            continue
+
+        items_detectados.append(
+            {
+                "descripcion": descripcion_item,
+                "cantidad_facturada": round(float(cantidad_fact), 2),
+                "precio_linea_impreso": round(float(precio_impreso), 2),
+                "unidades_por_empaque": detectar_unidades_por_empaque(descripcion_item),
+            }
+        )
+
+    return items_detectados
+
+
+def calcular_dataframe_items(items_lista: List[Dict[str, Any]]) -> pd.DataFrame:
+    """
+    Convierte la lista de ítems ('items') en un DataFrame de Pandas y realiza el cálculo
+    100% en Python:
+      - df['precio_unitario_real'] = df['precio_linea_impreso'] / df['unidades_por_empaque']
+      - df['cantidad_total_unidades'] = df['cantidad_facturada'] * df['unidades_por_empaque']
+    """
+    columnas_base = [
+        "descripcion",
+        "cantidad_facturada",
+        "precio_linea_impreso",
+        "unidades_por_empaque",
+    ]
+    if not items_lista:
+        df_vacio = pd.DataFrame(columns=columnas_base + ["precio_unitario_real", "cantidad_total_unidades"])
+        return df_vacio
+
+    df = pd.DataFrame(items_lista)
+    for col in columnas_base:
+        if col not in df.columns:
+            df[col] = "" if col == "descripcion" else (1 if col == "unidades_por_empaque" else 0.0)
+
+    df["descripcion"] = df["descripcion"].astype(str).fillna("")
+    df["cantidad_facturada"] = pd.to_numeric(df["cantidad_facturada"], errors="coerce").fillna(1.0).clip(lower=0.0)
+    df["precio_linea_impreso"] = pd.to_numeric(df["precio_linea_impreso"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    df["unidades_por_empaque"] = (
+        pd.to_numeric(df["unidades_por_empaque"], errors="coerce")
+        .fillna(1)
+        .clip(lower=1)
+        .round(0)
+        .astype(int)
+    )
+
+    # Calculamos el precio unitario real de cada artículo individual
+    df["precio_unitario_real"] = (df["precio_linea_impreso"] / df["unidades_por_empaque"]).round(2)
+
+    # Calculamos la cantidad total de artículos individuales que entraron al inventario
+    df["cantidad_total_unidades"] = (df["cantidad_facturada"] * df["unidades_por_empaque"]).round(2)
+
+    return df[columnas_base + ["precio_unitario_real", "cantidad_total_unidades"]]
+
+
 def extraer_json_de_respuesta(texto_respuesta: str) -> Dict:
     """Extrae de forma segura un bloque JSON desde la respuesta del modelo de visión."""
     try:
@@ -1039,7 +1319,12 @@ def extraer_con_vision_multimodal(
             if resp_g.ok:
                 cand = resp_g.json().get("candidates", [])
                 txt_g = cand[0]["content"]["parts"][0]["text"] if cand else "{}"
-                return normalizar_diccionario_extraido(extraer_json_de_respuesta(txt_g)), None
+                datos_gem = extraer_json_de_respuesta(txt_g)
+                items_gem = normalizar_items_extraidos(datos_gem.get("items", []))
+                if not items_gem and texto_ocr_apoyo:
+                    items_gem = extraer_items_con_regex(texto_ocr_apoyo)
+                st.session_state["items_actuales"] = items_gem
+                return normalizar_diccionario_extraido(datos_gem), None
         except Exception:
             pass
 
@@ -1119,6 +1404,10 @@ def extraer_con_vision_multimodal(
 
         contenido = resp.json()["choices"][0]["message"]["content"]
         datos = extraer_json_de_respuesta(contenido)
+        items_ia = normalizar_items_extraidos(datos.get("items", []))
+        if not items_ia and texto_ocr_apoyo:
+            items_ia = extraer_items_con_regex(texto_ocr_apoyo)
+        st.session_state["items_actuales"] = items_ia
         return normalizar_diccionario_extraido(datos), None
     except Exception as exc:
         return (
@@ -1418,6 +1707,8 @@ def inicializar_estado_sesion() -> None:
         st.session_state["texto_ocr"] = ""
     if "datos_actuales" not in st.session_state:
         st.session_state["datos_actuales"] = {k: VALOR_NO_IDENTIFICADO for k in CAMPOS_COMPROBANTE}
+    if "items_actuales" not in st.session_state:
+        st.session_state["items_actuales"] = []
     if "historial_comprobantes" not in st.session_state:
         st.session_state["historial_comprobantes"] = []
     if "usuario_supabase" not in st.session_state:
@@ -2524,10 +2815,13 @@ def main() -> None:
                                                 f"ℹ️ {error_ia}\nSe aplicó automáticamente la extracción contable por reglas sobre los {cant_frag} fragmento(s)."
                                             )
                                             datos_ext = extraer_con_reglas_regex(texto_detectado)
+                                            st.session_state["items_actuales"] = extraer_items_con_regex(texto_detectado)
                                         else:
                                             st.warning(f"⚠️ {error_ia}")
                                     elif aplicar_hibrido_regex and texto_detectado:
                                         datos_ext = aplicar_refuerzo_regex(datos_ext, texto_detectado)
+                                        if not st.session_state.get("items_actuales"):
+                                            st.session_state["items_actuales"] = extraer_items_con_regex(texto_detectado)
 
                                     st.session_state["datos_actuales"] = datos_ext
                                     st.success(
@@ -2659,12 +2953,156 @@ def main() -> None:
                 }
                 st.session_state["datos_actuales"] = datos_revisados
 
+                # ------------------------------------------------------------------
+                # TABLA DE ÍTEMS FACTURADOS Y CÁLCULO DE COSTO UNITARIO CON PANDAS
+                # ------------------------------------------------------------------
+                st.markdown("---")
+                col_tit_items, col_btn_demo_items = st.columns([3.2, 1.4], vertical_alignment="center")
+                with col_tit_items:
+                    st.markdown("##### 📦 Detalle de Ítems y Costo Unitario Real (Cálculo Python / Pandas)")
+                    st.caption(
+                        "Doble clic en cualquier celda para corregir valores (ej. cambiar unidades por empaque de `8` a `6`). "
+                        "Python recalcula automáticamente el **Precio Unitario Real** y el **Total de Unidades**."
+                    )
+                with col_btn_demo_items:
+                    if st.button(
+                        "🧪 Cargar ejemplo (6x3L)",
+                        key="btn_ejemplo_items",
+                        use_container_width=True,
+                        help="Carga el caso de ejemplo 'Manaos Cola 6x3L' para probar el recálculo automático en Pandas.",
+                    ):
+                        st.session_state["items_actuales"] = [
+                            {
+                                "descripcion": "Manaos Cola 6x3L",
+                                "cantidad_facturada": 1.0,
+                                "precio_linea_impreso": 8200.0,
+                                "unidades_por_empaque": 6,
+                            }
+                        ]
+                        st.rerun()
+
+                df_items_actual = calcular_dataframe_items(st.session_state.get("items_actuales", []))
+
+                df_items_editado = st.data_editor(
+                    df_items_actual,
+                    column_config={
+                        "descripcion": st.column_config.TextColumn(
+                            "Descripción del Producto",
+                            help="Texto que describe el artículo o servicio (ej. 'Manaos Cola 6x3L').",
+                            width="medium",
+                            required=True,
+                        ),
+                        "cantidad_facturada": st.column_config.NumberColumn(
+                            "Cant. Bultos",
+                            help="Cantidad de bultos, fardos o packs que figura en la factura.",
+                            min_value=0.0,
+                            step=1.0,
+                            format="%.2f",
+                            width="small",
+                            required=True,
+                        ),
+                        "precio_linea_impreso": st.column_config.NumberColumn(
+                            "Precio Bulto (Factura)",
+                            help="Precio unitario del fardo/bulto impreso en la línea de la factura.",
+                            min_value=0.0,
+                            step=10.0,
+                            format="$ %.2f",
+                            width="small",
+                            required=True,
+                        ),
+                        "unidades_por_empaque": st.column_config.NumberColumn(
+                            "Unid. x Empaque",
+                            help="Unidades individuales dentro del empaque (ej. 6 en '6x3L', 12 en 'Caja x 12'). ¡Editalo para recalcular!",
+                            min_value=1,
+                            step=1,
+                            format="%d u.",
+                            width="small",
+                            required=True,
+                        ),
+                        "precio_unitario_real": st.column_config.NumberColumn(
+                            "💡 Costo Unitario Real",
+                            help="Calculado por Python: precio_linea_impreso / unidades_por_empaque",
+                            format="$ %.2f",
+                            disabled=True,
+                            width="small",
+                        ),
+                        "cantidad_total_unidades": st.column_config.NumberColumn(
+                            "📊 Total Unidades",
+                            help="Calculado por Python: cantidad_facturada * unidades_por_empaque",
+                            format="%.0f u.",
+                            disabled=True,
+                            width="small",
+                        ),
+                    },
+                    num_rows="dynamic",
+                    hide_index=True,
+                    use_container_width=True,
+                    key="editor_items_factura",
+                )
+
+                # Sincronizar ediciones del usuario y recalcular al instante con Pandas
+                items_editados_limpios: List[Dict[str, Any]] = []
+                for _, fila_it in df_items_editado.iterrows():
+                    desc_it = str(fila_it.get("descripcion", "") or "").strip()
+                    if not desc_it or desc_it.lower() == "nan":
+                        continue
+                    try:
+                        cant_it = float(fila_it.get("cantidad_facturada", 1.0) or 1.0)
+                    except Exception:
+                        cant_it = 1.0
+                    try:
+                        precio_it = float(fila_it.get("precio_linea_impreso", 0.0) or 0.0)
+                    except Exception:
+                        precio_it = 0.0
+                    try:
+                        unid_it = max(1, int(round(float(fila_it.get("unidades_por_empaque", 1) or 1))))
+                    except Exception:
+                        unid_it = 1
+
+                    items_editados_limpios.append(
+                        {
+                            "descripcion": desc_it,
+                            "cantidad_facturada": round(cant_it, 2),
+                            "precio_linea_impreso": round(precio_it, 2),
+                            "unidades_por_empaque": unid_it,
+                        }
+                    )
+
+                if items_editados_limpios != st.session_state.get("items_actuales", []):
+                    st.session_state["items_actuales"] = items_editados_limpios
+                    st.rerun()
+
+                df_items_final = calcular_dataframe_items(st.session_state.get("items_actuales", []))
+                if not df_items_final.empty:
+                    with st.expander("💡 Lectura para el Negocio / Inventario (Fardo vs. Unidad Individual)", expanded=True):
+                        for _, r_item in df_items_final.iterrows():
+                            st.markdown(
+                                f"- **{r_item['descripcion']}**: Compraste **{r_item['cantidad_facturada']:g}** "
+                                f"bulto(s)/fardo(s) a **${r_item['precio_linea_impreso']:,.2f}** *(lo que dice la factura)* "
+                                f"➔ **Cada unidad individual te costó ${r_item['precio_unitario_real']:,.2f}** "
+                                f"*(ingresan **{r_item['cantidad_total_unidades']:g}** unidades al inventario)*."
+                            )
+                        csv_items_bytes = df_items_final.to_csv(index=False).encode("utf-8-sig")
+                        st.download_button(
+                            label="⬇️ Exportar Tabla de Ítems y Costos Unitarios (CSV)",
+                            data=csv_items_bytes,
+                            file_name="items_costo_unitario.csv",
+                            mime="text/csv",
+                            key="btn_descargar_items_csv",
+                            use_container_width=True,
+                        )
+
                 # Segmentación con st.expander para ocultar datos secundarios, JSON crudo y texto OCR
                 with st.expander("🗂️ Ver JSON crudo estructurado y datos técnicos del OCR", expanded=False):
-                    sub_tab_json, sub_tab_ocr = st.tabs(["📄 JSON Estructurado (IA)", "📝 Texto Crudo (Tesseract OCR)"])
+                    sub_tab_json, sub_tab_ocr = st.tabs(["📄 JSON Estructurado (IA + Ítems)", "📝 Texto Crudo (Tesseract OCR)"])
                     with sub_tab_json:
-                        st.caption("Estructura JSON normalizada lista para almacenar o exportar:")
-                        st.json(datos_revisados)
+                        st.caption("Estructura JSON normalizada lista para almacenar o exportar (incluye 'items'):")
+                        st.json(
+                            {
+                                **datos_revisados,
+                                "items": st.session_state.get("items_actuales", []),
+                            }
+                        )
                     with sub_tab_ocr:
                         texto_editable_ocr = st.text_area(
                             "Salida cruda de Tesseract (--oem 3 --psm 6):",
@@ -2712,7 +3150,11 @@ def main() -> None:
                             )
 
                 with col_btn2:
-                    json_individual = json.dumps(datos_revisados, ensure_ascii=False, indent=2)
+                    payload_export_json = {
+                        **datos_revisados,
+                        "items": df_items_final.to_dict(orient="records") if not df_items_final.empty else [],
+                    }
+                    json_individual = json.dumps(payload_export_json, ensure_ascii=False, indent=2)
                     st.download_button(
                         label="⬇️ Exportar JSON",
                         data=json_individual.encode("utf-8"),
